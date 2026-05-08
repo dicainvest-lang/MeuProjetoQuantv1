@@ -263,17 +263,35 @@ except ImportError:
     OPTUNA_OK = False
 
 # ==============================================================================
-# CONSTANTES FINANCEIRAS (preservadas do Colab)
+# CONSTANTES FINANCEIRAS — defaults (serão sobrescritas pelos widgets da sidebar)
 # ==============================================================================
-CAPITAL_INICIAL     = 100_000
-SPREAD_PIPS         = 0.0002
-SLIPPAGE            = 0.0001
-CUSTO_OPERACIONAL   = 0.0001
-RISCO_POR_TRADE     = 0.02
-STOP_LOSS_PCT       = 0.02
-TAKE_PROFIT_PCT     = 0.04
-WF_N_SPLITS         = 5
-WF_TEST_SIZE        = 60
+_DEFAULT_CAPITAL_INICIAL    = 100_000
+_DEFAULT_SPREAD_PIPS        = 0.0002
+_DEFAULT_SLIPPAGE           = 0.0001
+_DEFAULT_CUSTO_OPERACIONAL  = 0.0001
+_DEFAULT_RISCO_POR_TRADE    = 0.02
+_DEFAULT_STOP_LOSS_PCT      = 0.02
+_DEFAULT_TAKE_PROFIT_PCT    = 0.04
+_DEFAULT_WF_N_SPLITS        = 5
+_DEFAULT_WF_TEST_SIZE       = 60
+_DEFAULT_TRAIN_RATIO        = 0.70
+_DEFAULT_VAL_RATIO          = 0.15
+_DEFAULT_CORRELACAO_MAX     = 0.95
+_DEFAULT_ZSCORE_PERIOD      = 20   # período do z-score usado nas features
+_DEFAULT_BB_PERIOD          = 20   # período das Bollinger Bands
+_DEFAULT_ATR_PERIOD         = 14   # período do ATR principal
+_DEFAULT_RSI_PERIOD         = 14   # período do RSI principal
+
+# Estes são substituídos pelos valores da sidebar em runtime
+CAPITAL_INICIAL     = _DEFAULT_CAPITAL_INICIAL
+SPREAD_PIPS         = _DEFAULT_SPREAD_PIPS
+SLIPPAGE            = _DEFAULT_SLIPPAGE
+CUSTO_OPERACIONAL   = _DEFAULT_CUSTO_OPERACIONAL
+RISCO_POR_TRADE     = _DEFAULT_RISCO_POR_TRADE
+STOP_LOSS_PCT       = _DEFAULT_STOP_LOSS_PCT
+TAKE_PROFIT_PCT     = _DEFAULT_TAKE_PROFIT_PCT
+WF_N_SPLITS         = _DEFAULT_WF_N_SPLITS
+WF_TEST_SIZE        = _DEFAULT_WF_TEST_SIZE
 
 COLUNAS_NAO_FEATURE = [
     'Open', 'High', 'Low', 'Close', 'Volume',
@@ -913,12 +931,33 @@ def predict_next_day(ticker, modelo, scaler_obj, feature_names, threshold):
 # ==============================================================================
 # FUNÇÃO PRINCIPAL: processar_estrategia (encapsula TODO o pipeline do Colab)
 # ==============================================================================
-def processar_estrategia(ticker: str, anos: int = 5, interval: str = "1d",
-                          max_features: int = 60, usar_ensemble: bool = False,
-                          run_walk_forward: bool = True):
+def processar_estrategia(
+        ticker: str,
+        anos: int = 5,
+        interval: str = "1d",
+        max_features: int = 60,
+        usar_ensemble: bool = False,
+        run_walk_forward: bool = True,
+        # ── Gestão de risco ─────────────────────────────────────
+        capital_inicial: float = _DEFAULT_CAPITAL_INICIAL,
+        risco_por_trade: float = _DEFAULT_RISCO_POR_TRADE,
+        stop_loss_pct: float = _DEFAULT_STOP_LOSS_PCT,
+        take_profit_pct: float = _DEFAULT_TAKE_PROFIT_PCT,
+        # ── Custos ──────────────────────────────────────────────
+        spread_pips: float = _DEFAULT_SPREAD_PIPS,
+        slippage: float = _DEFAULT_SLIPPAGE,
+        custo_operacional: float = _DEFAULT_CUSTO_OPERACIONAL,
+        # ── Split / modelo ──────────────────────────────────────
+        train_ratio: float = _DEFAULT_TRAIN_RATIO,
+        val_ratio: float = _DEFAULT_VAL_RATIO,
+        correlacao_max: float = _DEFAULT_CORRELACAO_MAX,
+        # ── Walk-forward ────────────────────────────────────────
+        wf_n_splits: int = _DEFAULT_WF_N_SPLITS,
+        wf_test_size: int = _DEFAULT_WF_TEST_SIZE,
+    ):
     """
     Pipeline completo de ML para trading — mesma lógica do Colab.
-    Retorna dict com todos os resultados para exibição no dashboard.
+    Todos os parâmetros críticos são recebidos da sidebar (não mais hardcoded).
     """
     logs = []
     def log(msg):
@@ -939,13 +978,22 @@ def processar_estrategia(ticker: str, anos: int = 5, interval: str = "1d",
     df = engenharia_de_features(df)
 
     log("🔍 Selecionando features (Mutual Information)...")
-    features_sel, mi_ranking = selecionar_features(df, max_features=max_features)
+    features_sel, mi_ranking = selecionar_features(
+        df, max_features=max_features, correlacao_max=correlacao_max)
     if len(features_sel) == 0:
         raise ValueError("Nenhuma feature válida encontrada. Verifique os dados.")
 
     log(f"📐 {len(features_sel)} features selecionadas. Preparando dataset...")
     X, y, datas, closes, retornos = preparar_dataset(df, features_sel)
-    splits = split_temporal(X, y, datas, closes, retornos)
+
+    # Split com os ratios configurados na sidebar
+    test_ratio = max(1.0 - train_ratio - val_ratio, 0.05)
+    # Re-normalizar para garantir que somam 1
+    total = train_ratio + val_ratio + test_ratio
+    splits = split_temporal(X, y, datas, closes, retornos,
+                             train_r=train_ratio / total,
+                             val_r=val_ratio / total,
+                             test_r=test_ratio / total)
 
     log("📏 Normalizando (RobustScaler)...")
     scaler = RobustScaler()
@@ -987,7 +1035,8 @@ def processar_estrategia(ticker: str, anos: int = 5, interval: str = "1d",
     log("📊 Avaliando performance...")
     avaliacao = avaliar_completo(
         melhor_modelo, X_test_s, splits['y_test'],
-        splits['retornos_test'], splits['closes_test'], splits['datas_test'])
+        splits['retornos_test'], splits['closes_test'], splits['datas_test'],
+        spread=spread_pips, slippage_val=slippage, custo_op=custo_operacional)
 
     log("🎚️ Encontrando threshold ótimo...")
     prob_threshold, df_threshold = encontrar_threshold_otimo(
@@ -997,8 +1046,8 @@ def processar_estrategia(ticker: str, anos: int = 5, interval: str = "1d",
     backtest = backtest_realista(
         avaliacao['y_pred'], avaliacao['y_prob'],
         splits['closes_test'], splits['retornos_test'], splits['datas_test'],
-        CAPITAL_INICIAL, prob_threshold, RISCO_POR_TRADE,
-        STOP_LOSS_PCT, TAKE_PROFIT_PCT, SPREAD_PIPS, SLIPPAGE)
+        capital_inicial, prob_threshold, risco_por_trade,
+        stop_loss_pct, take_profit_pct, spread_pips, slippage)
 
     wf_resultados = None
     if run_walk_forward:
@@ -1191,13 +1240,14 @@ def plot_returns_dist(retornos_test):
     return fig
 
 # ==============================================================================
-# SIDEBAR
+# SIDEBAR — Configuração completa com todos os parâmetros do backtest
 # ==============================================================================
 with st.sidebar:
     st.markdown('<div class="sidebar-title">⚡ QUANT ML</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-subtitle">Trading Intelligence System v4.0</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section-header">⚙ Configuração</div>', unsafe_allow_html=True)
+    # ── 1. ATIVO E DADOS ──────────────────────────────────────────────────────
+    st.markdown('<div class="section-header">① ATIVO & DADOS</div>', unsafe_allow_html=True)
 
     TICKERS_POPULARES = [
         "USDJPY=X", "EURUSD=X", "GBPUSD=X", "AUDUSD=X",
@@ -1207,36 +1257,225 @@ with st.sidebar:
         "PETR4.SA", "VALE3.SA", "ITUB4.SA", "BBDC4.SA",
         "GC=F", "CL=F",
     ]
-
     ticker_input = st.selectbox(
-        "🎯 Ativo (Ticker)",
-        options=TICKERS_POPULARES,
-        index=0,
-        help="Selecione ou digite qualquer ticker válido do Yahoo Finance"
-    )
-    ticker_custom = st.text_input("Ou digite um ticker personalizado:", placeholder="ex: PETR4.SA")
+        "🎯 Ativo (Ticker)", options=TICKERS_POPULARES, index=0,
+        help="Selecione ou digite qualquer ticker válido do Yahoo Finance")
+    ticker_custom = st.text_input("Ou ticker personalizado:", placeholder="ex: PETR4.SA")
     ticker = ticker_custom.upper().strip() if ticker_custom.strip() else ticker_input
 
-    anos = st.select_slider(
-        "📅 Histórico (anos)",
-        options=[2, 3, 5, 7, 10],
-        value=5
-    )
+    anos = st.select_slider("📅 Histórico (anos)", options=[2, 3, 5, 7, 10], value=5)
 
-    interval_map = {"Diário (1d)": "1d", "Semanal (1wk)": "1wk"}
+    interval_map   = {"Diário (1d)": "1d", "Semanal (1wk)": "1wk"}
     interval_label = st.selectbox("⏱ Timeframe", list(interval_map.keys()))
-    interval = interval_map[interval_label]
-
-    max_features = st.slider("🔢 Max Features (MI)", 20, 80, 60, step=5)
+    interval       = interval_map[interval_label]
 
     st.markdown("---")
-    st.markdown('<div class="section-header">🛡 Parâmetros Avançados</div>', unsafe_allow_html=True)
 
-    usar_ensemble   = st.checkbox("Usar Ensemble", value=False,
-                                   help="Combina múltiplos modelos (mais lento)")
-    run_wf          = st.checkbox("Walk-Forward Validation", value=True)
+    # ── 2. GESTÃO DE RISCO & CAPITAL ──────────────────────────────────────────
+    st.markdown('<div class="section-header">② GESTÃO DE RISCO & CAPITAL</div>', unsafe_allow_html=True)
+
+    CAPITAL_INICIAL = st.number_input(
+        "💰 Capital Inicial (USD)",
+        min_value=1_000, max_value=10_000_000,
+        value=_DEFAULT_CAPITAL_INICIAL, step=5_000,
+        help="Capital inicial simulado para o backtest")
+
+    RISCO_POR_TRADE = st.slider(
+        "🎲 Risco por Trade (%)",
+        min_value=0.5, max_value=10.0,
+        value=float(_DEFAULT_RISCO_POR_TRADE * 100), step=0.5,
+        format="%.1f%%",
+        help="Percentual do capital arriscado por operação (position sizing)") / 100.0
+
+    col_sl, col_tp = st.columns(2)
+    with col_sl:
+        STOP_LOSS_PCT = st.number_input(
+            "🛑 Stop Loss (%)",
+            min_value=0.1, max_value=20.0,
+            value=float(_DEFAULT_STOP_LOSS_PCT * 100), step=0.1,
+            format="%.1f",
+            help="Stop Loss em % — encerra posição perdedora") / 100.0
+    with col_tp:
+        TAKE_PROFIT_PCT = st.number_input(
+            "🎯 Take Profit (%)",
+            min_value=0.1, max_value=50.0,
+            value=float(_DEFAULT_TAKE_PROFIT_PCT * 100), step=0.1,
+            format="%.1f",
+            help="Take Profit em % — encerra posição ganhadora") / 100.0
+
+    # Validação R:R ratio
+    rr_ratio = TAKE_PROFIT_PCT / STOP_LOSS_PCT if STOP_LOSS_PCT > 0 else 0
+    rr_color = "#10b981" if rr_ratio >= 2 else ("#f59e0b" if rr_ratio >= 1 else "#ef4444")
+    st.markdown(f"""
+    <div style="background:#111520; border:1px solid #1e2535; border-radius:8px;
+                padding:8px 12px; margin:-4px 0 8px 0; display:flex; justify-content:space-between;">
+        <span style="font-size:10px; color:#475569; font-family:JetBrains Mono;">R:R RATIO</span>
+        <span style="font-size:12px; font-weight:700; color:{rr_color}; font-family:JetBrains Mono;">
+            1 : {rr_ratio:.1f}
+        </span>
+    </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
+
+    # ── 3. CUSTOS OPERACIONAIS ────────────────────────────────────────────────
+    st.markdown('<div class="section-header">③ CUSTOS OPERACIONAIS</div>', unsafe_allow_html=True)
+
+    col_sp, col_sl2 = st.columns(2)
+    with col_sp:
+        SPREAD_PIPS = st.number_input(
+            "📊 Spread",
+            min_value=0.0, max_value=0.01,
+            value=_DEFAULT_SPREAD_PIPS, step=0.0001,
+            format="%.4f",
+            help="Spread do ativo (ex: 0.0002 = 2 pips para Forex)") 
+    with col_sl2:
+        SLIPPAGE = st.number_input(
+            "💨 Slippage",
+            min_value=0.0, max_value=0.005,
+            value=_DEFAULT_SLIPPAGE, step=0.0001,
+            format="%.4f",
+            help="Slippage estimado por execução")
+
+    CUSTO_OPERACIONAL = st.number_input(
+        "🏦 Custo Operacional (por trade)",
+        min_value=0.0, max_value=0.005,
+        value=_DEFAULT_CUSTO_OPERACIONAL, step=0.00005,
+        format="%.5f",
+        help="Comissão/taxa por operação (ex: 0.0001 = 0.01%)")
+
+    # Custo total estimado por trade
+    custo_total_est = SPREAD_PIPS + SLIPPAGE + CUSTO_OPERACIONAL
+    st.markdown(f"""
+    <div style="background:#111520; border:1px solid #1e2535; border-radius:8px;
+                padding:8px 12px; margin:-4px 0 8px 0; display:flex; justify-content:space-between;">
+        <span style="font-size:10px; color:#475569; font-family:JetBrains Mono;">CUSTO TOTAL/TRADE</span>
+        <span style="font-size:12px; font-weight:700; color:#f59e0b; font-family:JetBrains Mono;">
+            {custo_total_est:.4f} ({custo_total_est*100:.3f}%)
+        </span>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── 4. PARÂMETROS DO MODELO ───────────────────────────────────────────────
+    st.markdown('<div class="section-header">④ MODELO & FEATURES</div>', unsafe_allow_html=True)
+
+    max_features = st.slider(
+        "🔢 Max Features (MI)", 20, 80, 60, step=5,
+        help="Número máximo de features selecionadas por Mutual Information")
+
+    col_tr, col_vl = st.columns(2)
+    with col_tr:
+        TRAIN_RATIO = st.number_input(
+            "📚 Treino (%)", min_value=50, max_value=80,
+            value=int(_DEFAULT_TRAIN_RATIO * 100), step=5,
+            help="Proporção do dataset para treino") / 100.0
+    with col_vl:
+        VAL_RATIO = st.number_input(
+            "📋 Validação (%)", min_value=5, max_value=25,
+            value=int(_DEFAULT_VAL_RATIO * 100), step=5,
+            help="Proporção do dataset para validação") / 100.0
+
+    test_ratio_calc = 1.0 - TRAIN_RATIO - VAL_RATIO
+    test_ratio_color = "#10b981" if test_ratio_calc > 0.05 else "#ef4444"
+    st.markdown(f"""
+    <div style="background:#111520; border:1px solid #1e2535; border-radius:8px;
+                padding:8px 12px; margin:-4px 0 8px 0; display:flex; justify-content:space-between;">
+        <span style="font-size:10px; color:#475569; font-family:JetBrains Mono;">TESTE (calculado)</span>
+        <span style="font-size:12px; font-weight:700; color:{test_ratio_color}; font-family:JetBrains Mono;">
+            {max(test_ratio_calc, 0):.0%}
+        </span>
+    </div>""", unsafe_allow_html=True)
+
+    CORRELACAO_MAX = st.slider(
+        "🔗 Correlação Máx. entre Features",
+        min_value=0.70, max_value=0.99,
+        value=float(_DEFAULT_CORRELACAO_MAX), step=0.01,
+        format="%.2f",
+        help="Features com correlação de Pearson acima deste valor são removidas")
+
+    st.markdown("---")
+
+    # ── 5. INDICADORES TÉCNICOS ───────────────────────────────────────────────
+    st.markdown('<div class="section-header">⑤ INDICADORES TÉCNICOS</div>', unsafe_allow_html=True)
+
+    with st.expander("📐 Períodos dos Indicadores", expanded=False):
+        col_rsi, col_atr = st.columns(2)
+        with col_rsi:
+            RSI_PERIOD = st.selectbox(
+                "RSI Principal", options=[7, 9, 14, 21],
+                index=1,   # default 14
+                help="Período do RSI usado como feature principal e no sinal")
+        with col_atr:
+            ATR_PERIOD = st.selectbox(
+                "ATR Principal", options=[7, 10, 14, 21],
+                index=2,   # default 14
+                help="Período do ATR (Average True Range)")
+
+        col_zs, col_bb = st.columns(2)
+        with col_zs:
+            ZSCORE_PERIOD = st.selectbox(
+                "Z-Score Período", options=[10, 20, 30, 60],
+                index=1,   # default 20
+                help="Janela para cálculo do Z-Score de reversão à média")
+        with col_bb:
+            BB_PERIOD = st.selectbox(
+                "Bollinger Bands", options=[10, 14, 20, 30],
+                index=2,   # default 20
+                help="Período das Bandas de Bollinger")
+
+    st.markdown("---")
+
+    # ── 6. WALK-FORWARD ───────────────────────────────────────────────────────
+    st.markdown('<div class="section-header">⑥ WALK-FORWARD & AVANÇADO</div>', unsafe_allow_html=True)
+
+    run_wf = st.checkbox("🔄 Walk-Forward Validation", value=True,
+                          help="Valida o modelo OOS com expanding window (mais lento)")
+
+    if run_wf:
+        col_wf1, col_wf2 = st.columns(2)
+        with col_wf1:
+            WF_N_SPLITS = st.number_input(
+                "Nº Folds", min_value=3, max_value=10,
+                value=_DEFAULT_WF_N_SPLITS, step=1,
+                help="Número de janelas walk-forward")
+        with col_wf2:
+            WF_TEST_SIZE = st.number_input(
+                "Dias Teste/Fold", min_value=20, max_value=252,
+                value=_DEFAULT_WF_TEST_SIZE, step=10,
+                help="Dias de teste em cada janela walk-forward")
+    else:
+        WF_N_SPLITS  = _DEFAULT_WF_N_SPLITS
+        WF_TEST_SIZE = _DEFAULT_WF_TEST_SIZE
+
+    usar_ensemble = st.checkbox(
+        "🔗 Usar Ensemble (Voting + Ponderado)", value=False,
+        help="Combina múltiplos modelos. Aumenta performance mas é mais lento")
+
+    st.markdown("---")
+
+    # ── BOTÃO EXECUTAR ─────────────────────────────────────────────────────────
+    # Resumo dos parâmetros críticos antes do botão
+    st.markdown(f"""
+    <div style="background:#0d1117; border:1px solid #1e2535; border-radius:10px;
+                padding:12px 14px; margin-bottom:12px; font-family:JetBrains Mono; font-size:10px;">
+        <div style="color:#475569; letter-spacing:0.1em; margin-bottom:8px;">RESUMO DOS PARÂMETROS</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">
+            <span style="color:#64748b;">Capital</span>
+            <span style="color:#94a3b8; text-align:right;">${CAPITAL_INICIAL:,.0f}</span>
+            <span style="color:#64748b;">Stop Loss</span>
+            <span style="color:#ef4444; text-align:right;">{STOP_LOSS_PCT:.1%}</span>
+            <span style="color:#64748b;">Take Profit</span>
+            <span style="color:#10b981; text-align:right;">{TAKE_PROFIT_PCT:.1%}</span>
+            <span style="color:#64748b;">Risco/Trade</span>
+            <span style="color:#f59e0b; text-align:right;">{RISCO_POR_TRADE:.1%}</span>
+            <span style="color:#64748b;">Spread+Slip</span>
+            <span style="color:#8b5cf6; text-align:right;">{(SPREAD_PIPS+SLIPPAGE)*100:.3f}%</span>
+            <span style="color:#64748b;">R:R</span>
+            <span style="color:{rr_color}; text-align:right;">1:{rr_ratio:.1f}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     executar = st.button("🚀  EXECUTAR BACKTEST", use_container_width=True)
 
     st.markdown("---")
