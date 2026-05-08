@@ -1,404 +1,318 @@
 # -*- coding: utf-8 -*-
 # ==============================================================================
-# SISTEMA QUANTITATIVO DE ML PARA TRADING — Streamlit Dashboard
-# Versão: 4.0 | Dark Mode Professional
+# SISTEMA QUANTITATIVO DE ML PARA TRADING — DASHBOARD STREAMLIT
+# Versão: 4.0 Dashboard | Todos os parâmetros de backtest na sidebar
 # ==============================================================================
 
 import warnings
 warnings.filterwarnings('ignore')
 
 import streamlit as st
-import numpy as np
+import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-import yfinance as yf
 from datetime import datetime, timedelta
 import time
-import os
 
-# ─── Page Config ──────────────────────────────────────────────────────────────
+# ── ML ────────────────────────────────────────────────────────────────────────
+from sklearn.preprocessing import RobustScaler
+from sklearn.decomposition import PCA
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                              f1_score, roc_auc_score, confusion_matrix)
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+
+try:
+    from xgboost import XGBClassifier
+    XGB_AVAILABLE = True
+except ImportError:
+    XGB_AVAILABLE = False
+
+try:
+    from lightgbm import LGBMClassifier
+    LGB_AVAILABLE = True
+except ImportError:
+    LGB_AVAILABLE = False
+
+try:
+    import ta
+    TA_AVAILABLE = True
+except ImportError:
+    TA_AVAILABLE = False
+
+# ==============================================================================
+# CONFIGURAÇÃO DA PÁGINA
+# ==============================================================================
+
 st.set_page_config(
-    page_title="Quant ML Trading System",
+    page_title="Quant ML Trading Dashboard",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─── Custom CSS: Dark Mode Premium ────────────────────────────────────────────
+# ==============================================================================
+# ESTILOS DARK MODE
+# ==============================================================================
+
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;600;700&display=swap');
 
-:root {
-    --bg-primary:    #0b0e14;
-    --bg-card:       #111520;
-    --bg-hover:      #161c2a;
-    --border:        #1e2535;
-    --border-bright: #2a3550;
-    --accent-blue:   #3b82f6;
-    --accent-cyan:   #06b6d4;
-    --accent-green:  #10b981;
-    --accent-red:    #ef4444;
-    --accent-yellow: #f59e0b;
-    --accent-purple: #8b5cf6;
-    --text-primary:  #e2e8f0;
-    --text-secondary:#94a3b8;
-    --text-muted:    #475569;
-    --font-mono:     'JetBrains Mono', monospace;
-    --font-display:  'Syne', sans-serif;
-}
-
-html, body, [class*="css"], .stApp {
-    background-color: var(--bg-primary) !important;
-    color: var(--text-primary) !important;
-    font-family: var(--font-mono) !important;
+/* Fundo principal */
+.stApp {
+    background-color: #0b0e14;
+    font-family: 'Sora', sans-serif;
+    color: #c9d1d9;
 }
 
 /* Sidebar */
 [data-testid="stSidebar"] {
-    background: #0d1117 !important;
-    border-right: 1px solid var(--border) !important;
+    background-color: #0d1117;
+    border-right: 1px solid #21262d;
 }
-[data-testid="stSidebar"] * { font-family: var(--font-mono) !important; }
-
-/* Cards */
-.metric-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px 24px;
-    position: relative;
-    overflow: hidden;
-    transition: border-color 0.2s;
-}
-.metric-card:hover { border-color: var(--border-bright); }
-.metric-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-}
-.metric-card.blue::before  { background: linear-gradient(90deg, var(--accent-blue), transparent); }
-.metric-card.green::before { background: linear-gradient(90deg, var(--accent-green), transparent); }
-.metric-card.red::before   { background: linear-gradient(90deg, var(--accent-red), transparent); }
-.metric-card.yellow::before{ background: linear-gradient(90deg, var(--accent-yellow), transparent); }
-.metric-card.purple::before{ background: linear-gradient(90deg, var(--accent-purple), transparent); }
-.metric-card.cyan::before  { background: linear-gradient(90deg, var(--accent-cyan), transparent); }
-
-.metric-label {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin-bottom: 8px;
-}
-.metric-value {
-    font-family: var(--font-display);
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--text-primary);
-    line-height: 1;
-}
-.metric-value.pos { color: var(--accent-green); }
-.metric-value.neg { color: var(--accent-red); }
-.metric-value.neu { color: var(--accent-blue); }
-.metric-sub {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-top: 6px;
-}
-
-/* Section Headers */
-.section-header {
-    font-family: var(--font-display);
-    font-size: 13px;
-    font-weight: 700;
+[data-testid="stSidebar"] .stMarkdown h3 {
+    color: #58a6ff;
+    font-size: 0.75rem;
+    font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--text-secondary);
-    padding: 6px 0 12px 0;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 6px;
+    margin-top: 18px;
+}
+
+/* Cards de métricas */
+.metric-card {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 12px;
+    transition: border-color 0.2s;
+}
+.metric-card:hover { border-color: #58a6ff44; }
+.metric-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #8b949e;
+    margin-bottom: 6px;
+}
+.metric-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: #f0f6fc;
+    line-height: 1;
+}
+.metric-delta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    margin-top: 5px;
+}
+.delta-pos { color: #3fb950; }
+.delta-neg { color: #f85149; }
+.delta-neu { color: #8b949e; }
+
+/* Título do dashboard */
+.dash-title {
+    font-family: 'Sora', sans-serif;
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #f0f6fc;
+    letter-spacing: -0.02em;
+    margin-bottom: 2px;
+}
+.dash-subtitle {
+    font-size: 0.82rem;
+    color: #8b949e;
     margin-bottom: 20px;
 }
 
-/* Signal Badge */
-.signal-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-family: var(--font-display);
-    font-size: 18px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-}
-.signal-buy    { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.4); color: #10b981; }
-.signal-sell   { background: rgba(239,68,68,0.15);  border: 1px solid rgba(239,68,68,0.4);  color: #ef4444; }
-.signal-neutral{ background: rgba(148,163,184,0.1); border: 1px solid rgba(148,163,184,0.3);color: #94a3b8; }
-
-/* Table Styling */
-.stDataFrame { background: var(--bg-card) !important; }
-[data-testid="stTable"] { background: var(--bg-card) !important; }
-
-/* Streamlit native overrides */
-.stSelectbox > div > div,
-.stMultiSelect > div > div,
-.stSlider > div,
-.stTextInput > div > div {
-    background: var(--bg-card) !important;
-    border-color: var(--border) !important;
-    color: var(--text-primary) !important;
-}
-.stButton > button {
-    background: var(--accent-blue) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 8px !important;
-    font-family: var(--font-display) !important;
-    font-weight: 700 !important;
-    font-size: 13px !important;
-    letter-spacing: 0.08em !important;
-    padding: 12px 28px !important;
-    transition: all 0.2s !important;
-    width: 100%;
-}
-.stButton > button:hover {
-    background: #2563eb !important;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 20px rgba(59,130,246,0.3) !important;
-}
-
-/* Divider */
-hr { border-color: var(--border) !important; margin: 24px 0 !important; }
-
-/* Expander */
-.streamlit-expanderHeader {
-    background: var(--bg-card) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 8px !important;
-    color: var(--text-secondary) !important;
-    font-family: var(--font-mono) !important;
-    font-size: 12px !important;
-}
-
-/* Progress bars */
-.stProgress > div > div > div {
-    background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)) !important;
-}
-
-/* Spinner */
-.stSpinner > div { border-top-color: var(--accent-blue) !important; }
-
-/* Alerts */
-.stAlert { border-radius: 8px !important; font-family: var(--font-mono) !important; }
-
-/* Plotly charts */
-.js-plotly-plot { border-radius: 10px; }
-
-/* Sidebar title */
-.sidebar-title {
-    font-family: var(--font-display);
-    font-size: 20px;
-    font-weight: 800;
-    background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin-bottom: 4px;
-}
-.sidebar-subtitle {
-    font-size: 10px;
-    color: var(--text-muted);
+/* Seção */
+.section-header {
+    font-size: 0.72rem;
+    font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    margin-bottom: 24px;
+    color: #58a6ff;
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 8px;
+    margin: 24px 0 14px 0;
+}
+
+/* Sinal de previsão */
+.signal-buy {
+    background: linear-gradient(135deg, #1a2e1a 0%, #0d1117 100%);
+    border: 2px solid #3fb950;
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+}
+.signal-sell {
+    background: linear-gradient(135deg, #2e1a1a 0%, #0d1117 100%);
+    border: 2px solid #f85149;
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+}
+.signal-neutral {
+    background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%);
+    border: 2px solid #8b949e;
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+}
+.signal-text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+.signal-prob {
+    font-size: 0.8rem;
+    color: #8b949e;
+    margin-top: 6px;
+}
+
+/* Tabela de modelos */
+.model-table { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
+
+/* Info boxes */
+.info-box {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-left: 3px solid #58a6ff;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    color: #8b949e;
+    margin: 8px 0;
+}
+.warning-box {
+    background: #1c1a12;
+    border: 1px solid #2d2700;
+    border-left: 3px solid #d29922;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 0.8rem;
+    color: #8b949e;
+    margin: 8px 0;
+}
+
+/* Botão principal */
+div[data-testid="stButton"] > button {
+    background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-family: 'Sora', sans-serif;
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 10px 24px;
+    width: 100%;
+    transition: opacity 0.2s;
+}
+div[data-testid="stButton"] > button:hover { opacity: 0.85; }
+
+/* Sliders e inputs */
+[data-testid="stSlider"] label,
+[data-testid="stSelectbox"] label,
+[data-testid="stNumberInput"] label,
+[data-testid="stMultiSelect"] label {
+    color: #8b949e !important;
+    font-size: 0.78rem !important;
+    font-weight: 500;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# IMPORTS PARA ML
+# FUNÇÕES DE DADOS E ML
 # ==============================================================================
-try:
-    from sklearn.preprocessing import RobustScaler
-    from sklearn.decomposition import PCA
-    from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
-    from sklearn.metrics import (accuracy_score, precision_score, recall_score,
-                                  f1_score, roc_auc_score, confusion_matrix, roc_curve)
-    from sklearn.feature_selection import mutual_info_classif
-    from sklearn.tree import DecisionTreeClassifier
-    from sklearn.ensemble import (RandomForestClassifier, VotingClassifier, StackingClassifier)
-    from sklearn.linear_model import LogisticRegression
-    SKLEARN_OK = True
-except ImportError:
-    SKLEARN_OK = False
 
-try:
-    from xgboost import XGBClassifier
-    XGB_OK = True
-except ImportError:
-    XGB_OK = False
-
-try:
-    from lightgbm import LGBMClassifier
-    LGB_OK = True
-except ImportError:
-    LGB_OK = False
-
-try:
-    from catboost import CatBoostClassifier
-    CAT_OK = True
-except ImportError:
-    CAT_OK = False
-
-try:
-    import optuna
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    OPTUNA_OK = True
-except ImportError:
-    OPTUNA_OK = False
-
-# ==============================================================================
-# CONSTANTES FINANCEIRAS — defaults (serão sobrescritas pelos widgets da sidebar)
-# ==============================================================================
-_DEFAULT_CAPITAL_INICIAL    = 100_000
-_DEFAULT_SPREAD_PIPS        = 0.0002
-_DEFAULT_SLIPPAGE           = 0.0001
-_DEFAULT_CUSTO_OPERACIONAL  = 0.0001
-_DEFAULT_RISCO_POR_TRADE    = 0.02
-_DEFAULT_STOP_LOSS_PCT      = 0.02
-_DEFAULT_TAKE_PROFIT_PCT    = 0.04
-_DEFAULT_WF_N_SPLITS        = 5
-_DEFAULT_WF_TEST_SIZE       = 60
-_DEFAULT_TRAIN_RATIO        = 0.70
-_DEFAULT_VAL_RATIO          = 0.15
-_DEFAULT_CORRELACAO_MAX     = 0.95
-_DEFAULT_ZSCORE_PERIOD      = 20   # período do z-score usado nas features
-_DEFAULT_BB_PERIOD          = 20   # período das Bollinger Bands
-_DEFAULT_ATR_PERIOD         = 14   # período do ATR principal
-_DEFAULT_RSI_PERIOD         = 14   # período do RSI principal
-
-# Estes são substituídos pelos valores da sidebar em runtime
-CAPITAL_INICIAL     = _DEFAULT_CAPITAL_INICIAL
-SPREAD_PIPS         = _DEFAULT_SPREAD_PIPS
-SLIPPAGE            = _DEFAULT_SLIPPAGE
-CUSTO_OPERACIONAL   = _DEFAULT_CUSTO_OPERACIONAL
-RISCO_POR_TRADE     = _DEFAULT_RISCO_POR_TRADE
-STOP_LOSS_PCT       = _DEFAULT_STOP_LOSS_PCT
-TAKE_PROFIT_PCT     = _DEFAULT_TAKE_PROFIT_PCT
-WF_N_SPLITS         = _DEFAULT_WF_N_SPLITS
-WF_TEST_SIZE        = _DEFAULT_WF_TEST_SIZE
-
-COLUNAS_NAO_FEATURE = [
-    'Open', 'High', 'Low', 'Close', 'Volume',
-    'target', 'retorno_futuro_log', 'retorno_futuro_pct',
-    'retorno_futuro_pts', 'direcao_futura', 'retorno_atual'
-]
-
-# ==============================================================================
-# PASSO 2 — DOWNLOAD DE DADOS
-# ==============================================================================
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=60)
 def baixar_dados(ticker: str, anos: int = 5, interval: str = "1d") -> pd.DataFrame:
     data_inicio = (datetime.now() - timedelta(days=anos * 365)).strftime("%Y-%m-%d")
-    data_fim    = datetime.now().strftime("%Y-%m-%d")
-    df = yf.download(ticker, start=data_inicio, end=data_fim,
+    df = yf.download(ticker, start=data_inicio, end=datetime.now().strftime("%Y-%m-%d"),
                      interval=interval, auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.columns = [str(c).strip().capitalize() for c in df.columns]
     df = df.loc[:, ~df.columns.duplicated()]
-    df.columns = [c if c != 'Nan' else '_drop' for c in df.columns]
-    df.drop(columns=[c for c in df.columns if c == '_drop'], errors='ignore', inplace=True)
-    for alt in ['Adj close', 'Adj_close', 'Adjclose']:
-        if alt in df.columns and 'Close' not in df.columns:
-            df.rename(columns={alt: 'Close'}, inplace=True)
-    return df
-
-# ==============================================================================
-# PASSO 3 — LIMPEZA
-# ==============================================================================
-def limpar_dados(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.sort_index()
-    df = df[~df.index.duplicated(keep='last')]
-    if 'Close' in df.columns and 'Open' in df.columns:
-        mask_validos = (df['Close'] > 0) & (df['Open'] > 0)
-        df = df[mask_validos]
-    if 'Volume' in df.columns:
-        df['Volume'] = df['Volume'].fillna(0).clip(lower=0)
-    else:
+    if 'Volume' not in df.columns:
         df['Volume'] = 0
-    for col in ['Open', 'High', 'Low', 'Close']:
-        if col in df.columns:
-            df[col] = df[col].astype(float)
-    df.dropna(subset=[c for c in ['Open', 'High', 'Low', 'Close'] if c in df.columns], inplace=True)
-    return df
+    df['Volume'] = df['Volume'].fillna(0).astype(float)
+    df.dropna(subset=['Open','High','Low','Close'], inplace=True)
+    for col in ['Open','High','Low','Close']:
+        df[col] = df[col].astype(float)
+    df = df[df['Close'] > 0]
+    return df.sort_index()
 
-# ==============================================================================
-# PASSO 4 — TARGET
-# ==============================================================================
-def construir_target(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df['retorno_futuro_log'] = np.log(df['Close'].shift(-1) / df['Close'])
-    df['retorno_futuro_pct'] = df['Close'].pct_change().shift(-1) * 100
-    df['retorno_futuro_pts'] = df['Close'].shift(-1) - df['Close']
-    df['target']             = (df['retorno_futuro_log'] > 0).astype(int)
-    df['direcao_futura']     = np.sign(df['retorno_futuro_log'])
-    df['retorno_atual']      = np.log(df['Close'] / df['Close'].shift(1))
-    df = df.iloc[:-1]
-    return df
 
-# ==============================================================================
-# PASSO 5 — FEATURE ENGINEERING (lógica 100% preservada do Colab)
-# ==============================================================================
-def engenharia_de_features(df: pd.DataFrame) -> pd.DataFrame:
+def construir_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Feature engineering completo com indicadores técnicos."""
     df = df.copy()
-    o = df['Open']
-    h = df['High']
-    l = df['Low']
-    c = df['Close']
+    o, h, l, c = df['Open'], df['High'], df['Low'], df['Close']
     v = df['Volume'].replace(0, np.nan)
 
-    # 1. Médias Móveis
+    # Target
+    df['retorno_futuro_log'] = np.log(c.shift(-1) / c)
+    df['retorno_futuro_pct'] = c.pct_change().shift(-1) * 100
+    df['target'] = (df['retorno_futuro_log'] > 0).astype(int)
+    df['retorno_atual'] = np.log(c / c.shift(1))
+
+    # Médias móveis
     for p in [5, 10, 20, 50, 100, 200]:
         df[f'sma_{p}'] = c.rolling(p).mean()
         df[f'ema_{p}'] = c.ewm(span=p, adjust=False).mean()
+
     for p in [5, 10, 20, 50, 200]:
         df[f'preco_sma_{p}_ratio'] = c / df[f'sma_{p}'] - 1
+
     df['cruz_sma_5_20']   = (df['sma_5']  > df['sma_20']).astype(int)
     df['cruz_sma_20_50']  = (df['sma_20'] > df['sma_50']).astype(int)
     df['cruz_sma_50_200'] = (df['sma_50'] > df['sma_200']).astype(int)
-    typical_price = (h + l + c) / 3
-    df['vwap']             = (typical_price * v).rolling(20).sum() / v.rolling(20).sum()
+
+    # VWAP
+    tp = (h + l + c) / 3
+    df['vwap'] = (tp * v).rolling(20).sum() / v.rolling(20).sum()
     df['preco_vwap_ratio'] = c / df['vwap'] - 1
 
-    # 2. Momentum
+    # RSI
     for p in [7, 14, 21]:
         delta = c.diff()
         gain  = delta.clip(lower=0).rolling(p).mean()
         loss  = (-delta.clip(upper=0)).rolling(p).mean()
         rs    = gain / loss.replace(0, np.nan)
-        df[f'rsi_{p}']      = 100 - (100 / (1 + rs))
+        df[f'rsi_{p}'] = 100 - (100 / (1 + rs))
         df[f'rsi_{p}_norm'] = df[f'rsi_{p}'] / 50 - 1
+
+    # ROC
     for p in [5, 10, 20, 60]:
         df[f'roc_{p}'] = c.pct_change(p) * 100
+
+    # Momentum
     for p in [5, 10, 20]:
-        df[f'mom_{p}']      = c - c.shift(p)
+        df[f'mom_{p}'] = c - c.shift(p)
         df[f'mom_{p}_norm'] = df[f'mom_{p}'] / c.shift(p)
+
+    # Stochastic
     for p in [14, 21]:
         low_min  = l.rolling(p).min()
         high_max = h.rolling(p).max()
         denom    = high_max - low_min
-        df[f'stoch_k_{p}']    = 100 * (c - low_min) / denom.replace(0, np.nan)
-        df[f'stoch_d_{p}']    = df[f'stoch_k_{p}'].rolling(3).mean()
+        df[f'stoch_k_{p}'] = 100 * (c - low_min) / denom.replace(0, np.nan)
+        df[f'stoch_d_{p}'] = df[f'stoch_k_{p}'].rolling(3).mean()
         df[f'stoch_diff_{p}'] = df[f'stoch_k_{p}'] - df[f'stoch_d_{p}']
 
-    # 3. Volatilidade
+    # ATR
     tr1 = h - l
     tr2 = (h - c.shift(1)).abs()
     tr3 = (l - c.shift(1)).abs()
@@ -406,48 +320,55 @@ def engenharia_de_features(df: pd.DataFrame) -> pd.DataFrame:
     for p in [7, 14, 21]:
         df[f'atr_{p}']      = true_range.ewm(span=p, adjust=False).mean()
         df[f'atr_{p}_norm'] = df[f'atr_{p}'] / c
+
+    # Volatilidade
     ret = c.pct_change()
     for p in [5, 10, 20, 60]:
         df[f'vol_{p}'] = ret.rolling(p).std() * np.sqrt(252)
-    for p in [20]:
-        mid = c.rolling(p).mean()
-        std = c.rolling(p).std()
-        df[f'bb_upper_{p}'] = mid + 2 * std
-        df[f'bb_lower_{p}'] = mid - 2 * std
-        df[f'bb_width_{p}'] = (df[f'bb_upper_{p}'] - df[f'bb_lower_{p}']) / mid
-        df[f'bb_pos_{p}']   = (c - df[f'bb_lower_{p}']) / (df[f'bb_upper_{p}'] - df[f'bb_lower_{p}'] + 1e-9)
+
+    # Bollinger
+    mid = c.rolling(20).mean()
+    std = c.rolling(20).std()
+    df['bb_upper_20'] = mid + 2 * std
+    df['bb_lower_20'] = mid - 2 * std
+    df['bb_width_20'] = (df['bb_upper_20'] - df['bb_lower_20']) / mid
+    df['bb_pos_20']   = (c - df['bb_lower_20']) / (df['bb_upper_20'] - df['bb_lower_20'] + 1e-9)
+
     df['vol_regime'] = df['vol_5'] / df['vol_20']
 
-    # 4. Tendência
+    # MACD
     ema12 = c.ewm(span=12, adjust=False).mean()
     ema26 = c.ewm(span=26, adjust=False).mean()
     df['macd']        = ema12 - ema26
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
     df['macd_hist']   = df['macd'] - df['macd_signal']
     df['macd_norm']   = df['macd'] / c
-    for p in [14]:
-        dm_plus  = h.diff().clip(lower=0)
-        dm_minus = (-l.diff()).clip(lower=0)
-        tr_s     = true_range.ewm(span=p, adjust=False).mean()
-        di_plus  = 100 * dm_plus.ewm(span=p, adjust=False).mean() / tr_s.replace(0, np.nan)
-        di_minus = 100 * dm_minus.ewm(span=p, adjust=False).mean() / tr_s.replace(0, np.nan)
-        dx       = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus + 1e-9)
-        df[f'adx_{p}']      = dx.ewm(span=p, adjust=False).mean()
-        df[f'di_plus_{p}']  = di_plus
-        df[f'di_minus_{p}'] = di_minus
-        df[f'di_diff_{p}']  = di_plus - di_minus
+
+    # ADX
+    dm_plus  = h.diff().clip(lower=0)
+    dm_minus = (-l.diff()).clip(lower=0)
+    tr_s     = true_range.ewm(span=14, adjust=False).mean()
+    di_plus  = 100 * dm_plus.ewm(span=14, adjust=False).mean() / tr_s.replace(0, np.nan)
+    di_minus = 100 * dm_minus.ewm(span=14, adjust=False).mean() / tr_s.replace(0, np.nan)
+    dx       = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus + 1e-9)
+    df['adx_14']      = dx.ewm(span=14, adjust=False).mean()
+    df['di_plus_14']  = di_plus
+    df['di_minus_14'] = di_minus
+    df['di_diff_14']  = di_plus - di_minus
+
     for p in [20, 50]:
         df[f'ema_{p}_slope'] = df[f'ema_{p}'].diff(5) / df[f'ema_{p}'].shift(5)
 
-    # 5. Mean Reversion
+    # Z-Score
     for p in [20, 60]:
         mu = c.rolling(p).mean()
         sg = c.rolling(p).std()
         df[f'zscore_{p}'] = (c - mu) / sg.replace(0, np.nan)
+
     for p in [20, 50, 200]:
         df[f'dist_ema_{p}'] = (c / df[f'ema_{p}'] - 1) * 100
 
-    # 6. Volume
+    # Volume
     df['vol_rel_20'] = v / v.rolling(20).mean()
     df['vol_rel_50'] = v / v.rolling(50).mean()
     obv = (np.sign(c.diff()) * v).fillna(0).cumsum()
@@ -456,67 +377,51 @@ def engenharia_de_features(df: pd.DataFrame) -> pd.DataFrame:
     df['obv_ratio'] = obv / (df['obv_sma20'] + 1e-9)
     mf_vol = ((c - l) - (h - c)) / (h - l + 1e-9) * v
     df['mf_20'] = mf_vol.rolling(20).sum() / v.rolling(20).sum()
-    df['price_vol']      = (c * v).rolling(10).mean()
-    df['price_vol_norm'] = df['price_vol'] / df['price_vol'].rolling(60).mean()
 
-    # 7. Candlestick
-    df['corpo']         = (c - o).abs()
-    df['corpo_pct']     = df['corpo'] / o.clip(lower=1e-9)
-    df['sombra_sup']    = h - pd.concat([c, o], axis=1).max(axis=1)
-    df['sombra_inf']    = pd.concat([c, o], axis=1).min(axis=1) - l
-    df['sombra_sup_pct']= df['sombra_sup'] / o.clip(lower=1e-9)
-    df['sombra_inf_pct']= df['sombra_inf'] / o.clip(lower=1e-9)
-    df['range']         = h - l
-    df['range_pct']     = df['range'] / o.clip(lower=1e-9)
-    df['gap']           = (o - c.shift(1)) / c.shift(1).clip(lower=1e-9)
-    df['direcao_candle']= np.sign(c - o)
+    # Candlestick
+    df['corpo']       = (c - o).abs()
+    df['corpo_pct']   = df['corpo'] / o.clip(lower=1e-9)
+    df['sombra_sup']  = h - pd.concat([c, o], axis=1).max(axis=1)
+    df['sombra_inf']  = pd.concat([c, o], axis=1).min(axis=1) - l
+    df['sombra_sup_pct'] = df['sombra_sup'] / o.clip(lower=1e-9)
+    df['sombra_inf_pct'] = df['sombra_inf'] / o.clip(lower=1e-9)
+    df['range']       = h - l
+    df['range_pct']   = df['range'] / o.clip(lower=1e-9)
+    df['gap']         = (o - c.shift(1)) / c.shift(1).clip(lower=1e-9)
+    df['direcao_candle'] = np.sign(c - o)
+
     for n in [3, 5]:
         direcoes = (c > o).astype(int)
         df[f'sequencia_alta_{n}'] = direcoes.rolling(n).sum()
         df[f'pct_alta_{n}']       = df[f'sequencia_alta_{n}'] / n
 
-    # 8. Lags
+    # Lags
     for lag in [1, 2, 3, 5, 10, 20]:
         df[f'ret_lag_{lag}'] = ret.shift(lag)
     for lag in [1, 5, 10]:
-        df[f'vol20_lag_{lag}'] = df['vol_20'].shift(lag)
-    for lag in [1, 3, 5]:
-        df[f'rsi14_lag_{lag}'] = df['rsi_14'].shift(lag)
+        df[f'vol20_lag_{lag}']  = df['vol_20'].shift(lag)
+        df[f'rsi14_lag_{lag}']  = df['rsi_14'].shift(lag)
     for lag in [1, 3]:
         df[f'macd_lag_{lag}'] = df['macd'].shift(lag)
 
-    # 9. Estatísticas Rolling
+    # Rolling stats
     for p in [20, 60]:
-        df[f'skew_{p}'] = ret.rolling(p).skew()
-        df[f'kurt_{p}'] = ret.rolling(p).kurt()
+        df[f'skew_{p}']  = ret.rolling(p).skew()
+        df[f'kurt_{p}']  = ret.rolling(p).kurt()
         df[f'maxdd_{p}'] = c.rolling(p).apply(
             lambda x: (x[-1] / x.max() - 1) if len(x) > 0 else 0, raw=True)
         df[f'autocorr_{p}'] = ret.rolling(p).apply(
             lambda x: pd.Series(x).autocorr(lag=1) if len(x) > 1 else 0, raw=True)
 
-    # 10. Regimes de Mercado
-    df['regime_tendencia'] = (df['adx_14'] > 25).astype(int)
-    df['regime_alta_vol']  = (df['vol_regime'] > 1.2).astype(int)
+    # Regime
     above_sma50  = (c > df['sma_50']).astype(int)
     above_sma200 = (c > df['sma_200']).astype(int)
+    df['regime_tendencia'] = (df['adx_14'] > 25).astype(int)
+    df['regime_alta_vol']  = (df['vol_regime'] > 1.2).astype(int)
     df['regime_bull'] = ((above_sma50 == 1) & (above_sma200 == 1)).astype(int)
     df['regime_bear'] = ((above_sma50 == 0) & (above_sma200 == 0)).astype(int)
 
-    def hurst_rs(ts):
-        if len(ts) < 10 or ts.std() == 0:
-            return 0.5
-        mean = ts.mean()
-        deviations = ts - mean
-        cumdev = np.cumsum(deviations)
-        R = cumdev.max() - cumdev.min()
-        S = ts.std()
-        if S == 0:
-            return 0.5
-        return np.log(R / S) / np.log(len(ts))
-
-    df['hurst_60'] = ret.rolling(60).apply(hurst_rs, raw=True)
-
-    # Features temporais
+    # Tempo
     df['dia_semana'] = df.index.dayofweek
     df['dia_mes']    = df.index.day
     df['mes']        = df.index.month
@@ -525,1372 +430,796 @@ def engenharia_de_features(df: pd.DataFrame) -> pd.DataFrame:
     df['inicio_mes'] = (df.index.day <= 5).astype(int)
     df['fim_mes']    = (df.index.day >= 25).astype(int)
 
+    # Remover última linha (sem target válido)
+    df = df.iloc[:-1]
     return df
 
-# ==============================================================================
-# PASSO 6 — SELEÇÃO DE FEATURES
-# ==============================================================================
-def selecionar_features(df: pd.DataFrame,
-                         target_col: str = 'target',
-                         max_features: int = 60,
-                         correlacao_max: float = 0.95):
-    features_candidatas = [c for c in df.columns if c not in COLUNAS_NAO_FEATURE]
-    df_feats = df[features_candidatas + [target_col]].copy()
-    nan_pct = df_feats.isnull().mean()
+
+COLUNAS_NAO_FEATURE = [
+    'Open','High','Low','Close','Volume',
+    'target','retorno_futuro_log','retorno_futuro_pct',
+    'retorno_atual'
+]
+
+
+def selecionar_features(df: pd.DataFrame, max_features: int = 50) -> list:
+    features_cand = [c for c in df.columns if c not in COLUNAS_NAO_FEATURE]
+    df_f = df[features_cand + ['target']].copy()
+    nan_pct = df_f.isnull().mean()
     features_ok = nan_pct[nan_pct < 0.30].index.tolist()
-    features_ok = [f for f in features_ok if f != target_col]
-    df_clean = df_feats[features_ok + [target_col]].dropna()
-    variancias = df_clean[features_ok].var()
-    features_ok = variancias[variancias > 1e-10].index.tolist()
+    features_ok = [f for f in features_ok if f != 'target']
+    df_clean = df_f[features_ok + ['target']].dropna()
+    var = df_clean[features_ok].var()
+    features_ok = var[var > 1e-10].index.tolist()
+
     if len(features_ok) == 0:
-        return [], pd.Series()
-    corr_matrix = df_clean[features_ok].corr().abs()
-    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-    remover_corr = set()
-    for col in upper.columns:
-        if any(upper[col] > correlacao_max):
-            remover_corr.add(col)
-    features_ok = [f for f in features_ok if f not in remover_corr]
+        return []
+
+    corr = df_clean[features_ok].corr().abs()
+    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    rem = {col for col in upper.columns if any(upper[col] > 0.95)}
+    features_ok = [f for f in features_ok if f not in rem]
+
     X = df_clean[features_ok].values
-    y = df_clean[target_col].values
-    mi_scores = mutual_info_classif(X, y, random_state=42)
-    mi_ranking = pd.Series(mi_scores, index=features_ok).sort_values(ascending=False)
-    features_selecionadas = mi_ranking.head(max_features).index.tolist()
-    return features_selecionadas, mi_ranking
+    y = df_clean['target'].values
+    mi = mutual_info_classif(X, y, random_state=42)
+    mi_rank = pd.Series(mi, index=features_ok).sort_values(ascending=False)
+    return mi_rank.head(max_features).index.tolist()
 
-# ==============================================================================
-# PASSO 7/9 — PREPARAÇÃO E SPLIT
-# ==============================================================================
-def preparar_dataset(df, features, target_col='target'):
-    colunas = features + [target_col, 'Close', 'retorno_futuro_pct', 'retorno_atual']
-    colunas = [c for c in colunas if c in df.columns]
-    df_m = df[colunas].dropna()
-    X       = df_m[features].values
-    y       = df_m[target_col].values
-    datas   = df_m.index
-    closes  = df_m['Close'].values
-    retornos= df_m['retorno_futuro_pct'].values if 'retorno_futuro_pct' in df_m.columns else np.zeros(len(df_m))
-    return X, y, datas, closes, retornos
 
-def split_temporal(X, y, datas, closes, retornos,
-                   train_r=0.70, val_r=0.15, test_r=0.15):
-    n       = len(X)
-    n_train = int(n * train_r)
-    n_val   = int(n * val_r)
-    return {
-        'X_train': X[:n_train],          'y_train': y[:n_train],
-        'X_val':   X[n_train:n_train+n_val], 'y_val': y[n_train:n_train+n_val],
-        'X_test':  X[n_train+n_val:],    'y_test': y[n_train+n_val:],
-        'datas_train':    datas[:n_train],
-        'datas_val':      datas[n_train:n_train+n_val],
-        'datas_test':     datas[n_train+n_val:],
-        'closes_train':   closes[:n_train],
-        'closes_val':     closes[n_train:n_train+n_val],
-        'closes_test':    closes[n_train+n_val:],
-        'retornos_train': retornos[:n_train],
-        'retornos_val':   retornos[n_train:n_train+n_val],
-        'retornos_test':  retornos[n_train+n_val:],
-        'n_train': n_train,
-        'n_val': n_val,
-        'n_test': n - n_train - n_val,
-    }
-
-# ==============================================================================
-# PASSO 10 — MODELOS
-# ==============================================================================
-def criar_modelos():
+def treinar_modelos(X_train, y_train, X_val, y_val, X_test, y_test):
     modelos = {}
-    modelos['LogReg'] = LogisticRegression(
-        C=0.1, max_iter=1000, random_state=42, class_weight='balanced')
-    modelos['DecTree'] = DecisionTreeClassifier(
-        max_depth=5, min_samples_leaf=20, random_state=42, class_weight='balanced')
-    modelos['RandForest'] = RandomForestClassifier(
-        n_estimators=200, max_depth=6, min_samples_leaf=10,
-        max_features='sqrt', random_state=42, class_weight='balanced', n_jobs=-1)
-    if XGB_OK:
-        modelos['XGBoost'] = XGBClassifier(
-            n_estimators=300, max_depth=4, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8, gamma=0.1,
-            eval_metric='logloss', random_state=42, n_jobs=-1, verbosity=0)
-    if LGB_OK:
-        modelos['LightGBM'] = LGBMClassifier(
-            n_estimators=300, max_depth=4, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8, min_child_samples=20,
-            class_weight='balanced', random_state=42, n_jobs=-1, verbose=-1)
-    if CAT_OK:
-        modelos['CatBoost'] = CatBoostClassifier(
-            iterations=300, depth=4, learning_rate=0.05,
-            eval_metric='AUC', auto_class_weights='Balanced',
-            random_seed=42, verbose=0)
-    return modelos
-
-def treinar_modelos(modelos, X_train, y_train, X_val, y_val, X_test, y_test):
     resultados = []
+
+    modelos['LogReg'] = LogisticRegression(C=0.1, max_iter=1000, random_state=42,
+                                            class_weight='balanced')
+    modelos['RandForest'] = RandomForestClassifier(n_estimators=150, max_depth=6,
+                                                    min_samples_leaf=10, max_features='sqrt',
+                                                    random_state=42, class_weight='balanced',
+                                                    n_jobs=-1)
+    if XGB_AVAILABLE:
+        modelos['XGBoost'] = XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
+                                            subsample=0.8, colsample_bytree=0.8, gamma=0.1,
+                                            eval_metric='logloss', random_state=42,
+                                            n_jobs=-1, verbosity=0)
+    if LGB_AVAILABLE:
+        modelos['LightGBM'] = LGBMClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
+                                              subsample=0.8, colsample_bytree=0.8,
+                                              min_child_samples=20, class_weight='balanced',
+                                              random_state=42, n_jobs=-1, verbose=-1)
+
     modelos_treinados = {}
     for nome, modelo in modelos.items():
         modelo.fit(X_train, y_train)
-        y_pred_val  = modelo.predict(X_val)
-        y_pred_test = modelo.predict(X_test)
-        y_prob_val  = modelo.predict_proba(X_val)[:, 1]
-        y_prob_test = modelo.predict_proba(X_test)[:, 1]
-        res = {
-            'Modelo':    nome,
-            'Acc_Val':   accuracy_score(y_val,  y_pred_val),
-            'Acc_Test':  accuracy_score(y_test, y_pred_test),
-            'F1_Val':    f1_score(y_val,  y_pred_val, zero_division=0),
-            'F1_Test':   f1_score(y_test, y_pred_test, zero_division=0),
-            'ROC_Val':   roc_auc_score(y_val,  y_prob_val),
-            'ROC_Test':  roc_auc_score(y_test, y_prob_test),
-            'Prec_Test': precision_score(y_test, y_pred_test, zero_division=0),
-            'Rec_Test':  recall_score(y_test,  y_pred_test, zero_division=0),
-        }
-        resultados.append(res)
-        modelos_treinados[nome] = {
-            'modelo': modelo,
-            'y_pred_test': y_pred_test,
-            'y_prob_test': y_prob_test,
-        }
+        y_pred_t = modelo.predict(X_test)
+        y_prob_t = modelo.predict_proba(X_test)[:, 1]
+        resultados.append({
+            'Modelo': nome,
+            'ROC_Test': roc_auc_score(y_test, y_prob_t),
+            'Acc_Test': accuracy_score(y_test, y_pred_t),
+            'F1_Test':  f1_score(y_test, y_pred_t, zero_division=0),
+            'Prec_Test': precision_score(y_test, y_pred_t, zero_division=0),
+            'Rec_Test':  recall_score(y_test, y_pred_t, zero_division=0),
+        })
+        modelos_treinados[nome] = {'modelo': modelo,
+                                    'y_pred_test': y_pred_t,
+                                    'y_prob_test': y_prob_t}
+
     df_res = pd.DataFrame(resultados).sort_values('ROC_Test', ascending=False)
     return df_res, modelos_treinados
 
-# ==============================================================================
-# PASSO 12 — ENSEMBLE
-# ==============================================================================
-def criar_ensemble(modelos_treinados, X_val, y_val, X_train, y_train):
-    ensembles = {}
-    estimadores = []
-    for nome in ['XGBoost', 'LightGBM', 'CatBoost', 'RandForest', 'DecTree', 'LogReg']:
-        if nome in modelos_treinados:
-            estimadores.append((nome, modelos_treinados[nome]['modelo']))
-    if len(estimadores) < 2:
-        estimadores = [(n, i['modelo']) for n, i in list(modelos_treinados.items())]
-    if len(estimadores) < 2:
-        return {}
-    try:
-        voting = VotingClassifier(estimators=estimadores, voting='soft', n_jobs=-1)
-        voting.fit(X_train, y_train)
-        prob_val = voting.predict_proba(X_val)[:, 1]
-        auc_val  = roc_auc_score(y_val, prob_val)
-        ensembles['Voting_Soft'] = {'modelo': voting, 'auc_val': auc_val}
-    except Exception:
-        pass
-    try:
-        probs_val_pond = np.zeros(len(y_val))
-        soma_pesos = 0.0
-        pesos = {}
-        for nome, info in modelos_treinados.items():
-            prob = info['modelo'].predict_proba(X_val)[:, 1]
-            auc  = roc_auc_score(y_val, prob)
-            pesos[nome] = auc
-            probs_val_pond += auc * prob
-            soma_pesos += auc
-        if soma_pesos > 0:
-            probs_val_pond /= soma_pesos
-            auc_pond = roc_auc_score(y_val, probs_val_pond)
-            ensembles['Ponderado'] = {'pesos': pesos, 'soma_pesos': soma_pesos, 'auc_val': auc_pond}
-    except Exception:
-        pass
-    return ensembles
 
-# ==============================================================================
-# PASSO 13 — MÉTRICAS FINANCEIRAS (lógica preservada do Colab)
-# ==============================================================================
-def metricas_financeiras(retornos_modelo, retornos_bh, capital_inicial=100_000):
-    rm  = pd.Series(retornos_modelo) if not isinstance(retornos_modelo, pd.Series) else retornos_modelo
-    rbh = pd.Series(retornos_bh) if not isinstance(retornos_bh, pd.Series) else retornos_bh
-    equity    = capital_inicial * (1 + rm).cumprod()
-    equity_bh = capital_inicial * (1 + rbh).cumprod()
-    ret_total = (equity.iloc[-1] / capital_inicial - 1) if len(equity) > 0 else 0
-    ret_bh    = (equity_bh.iloc[-1] / capital_inicial - 1) if len(equity_bh) > 0 else 0
-    std = rm.std()
-    sharpe  = (rm.mean() / std * np.sqrt(252)) if std > 0 else 0
-    downside = rm[rm < 0].std()
-    sortino  = (rm.mean() / downside * np.sqrt(252)) if downside > 0 else 0
-    roll_max = equity.cummax()
-    drawdown = (equity - roll_max) / roll_max
-    max_dd   = drawdown.min()
-    ann_ret  = ret_total / (len(rm) / 252) if len(rm) > 0 else 0
-    calmar   = (-ann_ret / max_dd) if max_dd < 0 else 0
-    rm_clean = rm.dropna()
-    wins   = int((rm_clean > 0).sum())
-    losses = int((rm_clean <= 0).sum())
-    win_rate = wins / len(rm_clean) if len(rm_clean) > 0 else 0
-    gross_profit = rm_clean[rm_clean > 0].sum()
-    gross_loss   = abs(rm_clean[rm_clean < 0].sum())
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
-    avg_win  = rm_clean[rm_clean > 0].mean() if wins > 0 else 0
-    avg_loss = abs(rm_clean[rm_clean < 0].mean()) if losses > 0 else 1
-    payoff   = avg_win / avg_loss if avg_loss > 0 else 0
-    expectancy = win_rate * avg_win - (1 - win_rate) * avg_loss
-    return {
-        'Retorno Total': ret_total, 'Retorno B&H': ret_bh,
-        'Sharpe Ratio':  sharpe,    'Sortino Ratio': sortino,
-        'Max Drawdown':  max_dd,    'Calmar Ratio': calmar,
-        'Win Rate':      win_rate,  'Profit Factor': profit_factor,
-        'Payoff':        payoff,    'Expectancy': expectancy,
-        'N Trades':      len(rm),   'equity': equity,
-        'equity_bh':     equity_bh, 'drawdown': drawdown,
-    }
-
-def avaliar_completo(modelo, X_test, y_test, retornos_test, closes_test, datas_test):
-    y_pred = modelo.predict(X_test)
-    y_prob = modelo.predict_proba(X_test)[:, 1]
-    sinais = np.where(y_pred == 1, 1, -1)
-    retornos_modelo = pd.Series(sinais * retornos_test / 100, index=datas_test)
-    retornos_bh     = pd.Series(retornos_test / 100, index=datas_test)
-    n_trocas = (np.diff(y_pred) != 0).sum()
-    custo_total = n_trocas * (SPREAD_PIPS + SLIPPAGE + CUSTO_OPERACIONAL)
-    retornos_modelo.iloc[-1] -= custo_total
-    metricas_fin = metricas_financeiras(retornos_modelo, retornos_bh, CAPITAL_INICIAL)
-    return {
-        'y_pred': y_pred, 'y_prob': y_prob,
-        'acc':  accuracy_score(y_test, y_pred),
-        'prec': precision_score(y_test, y_pred, zero_division=0),
-        'rec':  recall_score(y_test, y_pred, zero_division=0),
-        'f1':   f1_score(y_test, y_pred, zero_division=0),
-        'roc':  roc_auc_score(y_test, y_prob),
-        'metricas_fin': metricas_fin,
-        'retornos_modelo': retornos_modelo,
-        'retornos_bh': retornos_bh,
-    }
-
-# ==============================================================================
-# PASSO 14 — BACKTEST REALISTA (lógica 100% preservada)
-# ==============================================================================
 def backtest_realista(y_pred, y_prob, closes, retornos, datas,
-                       capital_inicial=100_000, prob_threshold=0.55,
-                       risco_trade=0.02, stop_loss=0.02, take_profit=0.04,
-                       spread=0.0002, slippage=0.0001):
+                      capital_inicial, prob_threshold, risco_trade,
+                      stop_loss_pct, take_profit_pct,
+                      spread_pips, slippage, custo_operacional):
     capital = capital_inicial
     equity_curve = [capital]
     trades = []
+
     for i in range(len(y_pred)):
-        preco_entrada = closes[i]
-        retorno_real  = retornos[i] / 100
+        preco = closes[i]
+        ret_real = retornos[i] / 100
+
         sinal = 0
-        if y_prob[i] > prob_threshold:
+        if y_prob[i] >= prob_threshold:
             sinal = 1
-        elif y_prob[i] < (1 - prob_threshold):
+        elif y_prob[i] <= (1 - prob_threshold):
             sinal = -1
+
         if sinal == 0:
             equity_curve.append(capital)
             continue
-        custo_entrada = (spread + slippage) * capital
-        tamanho_pos   = capital * risco_trade
-        pnl_bruto     = tamanho_pos * sinal * retorno_real
+
+        custo_ent = (spread_pips + slippage + custo_operacional) * capital
+        tamanho = capital * risco_trade
+        pnl = tamanho * sinal * ret_real
+
         if sinal == 1:
-            if retorno_real < -stop_loss:
-                pnl_bruto = -tamanho_pos * stop_loss
-            elif retorno_real > take_profit:
-                pnl_bruto = tamanho_pos * take_profit
+            if ret_real < -stop_loss_pct:
+                pnl = -tamanho * stop_loss_pct
+            elif ret_real > take_profit_pct:
+                pnl = tamanho * take_profit_pct
         else:
-            if retorno_real > stop_loss:
-                pnl_bruto = -tamanho_pos * stop_loss
-            elif retorno_real < -take_profit:
-                pnl_bruto = tamanho_pos * take_profit
-        pnl_liquido = pnl_bruto - custo_entrada
-        capital    += pnl_liquido
+            if ret_real > stop_loss_pct:
+                pnl = -tamanho * stop_loss_pct
+            elif ret_real < -take_profit_pct:
+                pnl = tamanho * take_profit_pct
+
+        pnl_liq = pnl - custo_ent
+        capital += pnl_liq
         equity_curve.append(capital)
-        trades.append({
-            'data': datas[i], 'sinal': sinal, 'prob': y_prob[i],
-            'preco': preco_entrada, 'retorno_real': retorno_real,
-            'pnl': pnl_liquido, 'capital': capital,
-        })
-    eq_series = pd.Series(equity_curve)
-    ret_total = (capital / capital_inicial - 1)
+        trades.append({'data': datas[i], 'sinal': sinal, 'prob': y_prob[i],
+                        'preco': preco, 'retorno_real': ret_real,
+                        'pnl': pnl_liq, 'capital': capital})
+
+    eq = pd.Series(equity_curve)
+    roll_max = eq.cummax()
+    dd = (eq - roll_max) / roll_max
+    max_dd = dd.min()
+    ret_total = capital / capital_inicial - 1
+
     df_trades = pd.DataFrame(trades)
-    n_trades  = len(df_trades)
+    n_trades = len(df_trades)
     if n_trades > 0:
         wins = (df_trades['pnl'] > 0).sum()
         win_rate = wins / n_trades
-        pf_num = df_trades[df_trades['pnl'] > 0]['pnl'].sum()
-        pf_den = abs(df_trades[df_trades['pnl'] < 0]['pnl'].sum())
-        profit_factor = pf_num / pf_den if pf_den > 0 else np.inf
+        gp = df_trades[df_trades['pnl'] > 0]['pnl'].sum()
+        gl = abs(df_trades[df_trades['pnl'] < 0]['pnl'].sum())
+        pf = gp / gl if gl > 0 else float('inf')
     else:
-        win_rate = profit_factor = 0
-    roll_max = eq_series.cummax()
-    dd       = (eq_series - roll_max) / roll_max
-    max_dd   = dd.min()
+        win_rate = pf = 0
+
+    # Sharpe
+    eq_rets = eq.pct_change().dropna()
+    sharpe = (eq_rets.mean() / eq_rets.std() * np.sqrt(252)) if eq_rets.std() > 0 else 0
+
     return {
-        'equity_curve': eq_series, 'df_trades': df_trades,
-        'ret_total': ret_total,    'n_trades': n_trades,
-        'win_rate': win_rate,      'profit_factor': profit_factor,
-        'max_dd': max_dd,          'capital_final': capital,
+        'equity_curve': eq,
+        'df_trades': df_trades,
+        'ret_total': ret_total,
+        'n_trades': n_trades,
+        'win_rate': win_rate,
+        'profit_factor': pf,
+        'max_dd': max_dd,
+        'capital_final': capital,
+        'sharpe': sharpe,
+        'drawdown': dd,
     }
 
-# ==============================================================================
-# PASSO 16 — THRESHOLD ÓTIMO
-# ==============================================================================
-def encontrar_threshold_otimo(modelo, X_test, y_test, retornos_test):
-    y_prob = modelo.predict_proba(X_test)[:, 1]
-    thresholds = np.arange(0.40, 0.75, 0.02)
-    resultados = []
-    for thr in thresholds:
-        y_pred_thr = (y_prob >= thr).astype(int)
-        n_sinais = y_pred_thr.sum()
-        if n_sinais < 5:
-            continue
-        f1   = f1_score(y_test, y_pred_thr, zero_division=0)
-        prec = precision_score(y_test, y_pred_thr, zero_division=0)
-        rec  = recall_score(y_test, y_pred_thr, zero_division=0)
-        acc  = accuracy_score(y_test, y_pred_thr)
-        sinais = np.where(y_pred_thr == 1, 1, 0)
-        rets_est = sinais * retornos_test / 100
-        ret_total = (1 + rets_est).prod() - 1
-        resultados.append({'threshold': thr, 'f1': f1, 'acc': acc,
-                           'prec': prec, 'rec': rec, 'n_sinais': n_sinais,
-                           'pct_sinais': n_sinais / len(y_test), 'retorno': ret_total})
-    if not resultados:
-        return 0.55, pd.DataFrame()
-    df_thr = pd.DataFrame(resultados)
-    thr_otimo = float(df_thr.loc[df_thr['f1'].idxmax(), 'threshold'])
-    return thr_otimo, df_thr
 
-# ==============================================================================
-# PASSO 18 — WALK-FORWARD
-# ==============================================================================
-def walk_forward_validation(X, y, datas, retornos, prob_threshold,
-                              n_splits=5, test_size=60):
-    tscv = TimeSeriesSplit(n_splits=n_splits, test_size=test_size)
-    wf_resultados = []
-    retornos_wf_todos = []
-    for fold, (train_idx, test_idx) in enumerate(tscv.split(X), 1):
-        X_tr, X_te = X[train_idx], X[test_idx]
-        y_tr, y_te = y[train_idx], y[test_idx]
-        ret_te     = retornos[test_idx]
-        sc = RobustScaler()
-        X_tr_s = sc.fit_transform(X_tr)
-        X_te_s = sc.transform(X_te)
-        if XGB_OK:
-            modelo_wf = XGBClassifier(
-                n_estimators=200, max_depth=4, learning_rate=0.05,
-                subsample=0.8, eval_metric='logloss', random_state=42,
-                n_jobs=-1, verbosity=0)
-        else:
-            modelo_wf = RandomForestClassifier(
-                n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
-        modelo_wf.fit(X_tr_s, y_tr)
-        y_pred = modelo_wf.predict(X_te_s)
-        y_prob = modelo_wf.predict_proba(X_te_s)[:, 1]
-        acc = accuracy_score(y_te, y_pred)
-        roc = roc_auc_score(y_te, y_prob)
-        f1  = f1_score(y_te, y_pred, zero_division=0)
-        sinais  = np.where(y_prob >= prob_threshold, 1,
-                           np.where(y_prob <= 1 - prob_threshold, -1, 0))
-        ret_est = sinais * ret_te / 100
-        ret_total = (1 + ret_est).prod() - 1
-        wf_resultados.append({
-            'Fold': fold,
-            'Período': f"{datas[test_idx[0]].date()} → {datas[test_idx[-1]].date()}",
-            'N_Treino': len(train_idx), 'N_Teste': len(test_idx),
-            'Accuracy': acc, 'ROC-AUC': roc, 'F1': f1, 'Retorno': ret_total,
-        })
-        retornos_wf_todos.extend(ret_est.tolist())
-    df_wf = pd.DataFrame(wf_resultados)
-    retornos_wf_series = pd.Series(retornos_wf_todos)
-    return {'df_wf': df_wf, 'retornos_todos': retornos_wf_series}
-
-# ==============================================================================
-# PASSO 20 — PREVISÃO PRODUÇÃO
-# ==============================================================================
-def predict_next_day(ticker, modelo, scaler_obj, feature_names, threshold):
-    df_novo = baixar_dados(ticker, anos=1, interval="1d")
-    df_novo = limpar_dados(df_novo)
-    df_novo = construir_target(df_novo)
-    df_novo = engenharia_de_features(df_novo)
-    for f in feature_names:
-        if f not in df_novo.columns:
-            df_novo[f] = 0.0
-    ultima_linha = df_novo[feature_names].iloc[-1:]
-    ultima_linha = ultima_linha.fillna(0)
-    X_prod = scaler_obj.transform(ultima_linha.values)
-    prob_alta  = modelo.predict_proba(X_prod)[0, 1]
-    prob_queda = 1 - prob_alta
-    if prob_alta >= threshold:
-        sinal = "BUY"
-        confianca = prob_alta
-    elif prob_queda >= threshold:
-        sinal = "SELL"
-        confianca = prob_queda
-    else:
-        sinal = "NEUTRAL"
-        confianca = max(prob_alta, prob_queda)
-    preco_atual  = float(df_novo['Close'].iloc[-1])
-    rsi_atual    = float(df_novo['rsi_14'].iloc[-1]) if 'rsi_14' in df_novo.columns else 50.0
-    vol_20       = float(df_novo['vol_20'].iloc[-1]) if 'vol_20' in df_novo.columns else 0.0
-    retorno_hoje = float(df_novo['retorno_atual'].iloc[-1]) * 100 if 'retorno_atual' in df_novo.columns else 0.0
-    data_ref     = df_novo.index[-1].date()
+def calcular_metricas_financeiras(retornos_mod, retornos_bh, capital_inicial):
+    equity    = pd.Series(capital_inicial * (1 + retornos_mod).cumprod())
+    equity_bh = pd.Series(capital_inicial * (1 + retornos_bh).cumprod())
+    ret_total = equity.iloc[-1] / capital_inicial - 1
+    ret_bh    = equity_bh.iloc[-1] / capital_inicial - 1
+    std       = retornos_mod.std()
+    sharpe    = (retornos_mod.mean() / std * np.sqrt(252)) if std > 0 else 0
+    downside  = retornos_mod[retornos_mod < 0].std()
+    sortino   = (retornos_mod.mean() / downside * np.sqrt(252)) if downside > 0 else 0
+    roll_max  = equity.cummax()
+    drawdown  = (equity - roll_max) / roll_max
+    max_dd    = drawdown.min()
+    rm = pd.Series(retornos_mod)
+    wins   = (rm > 0).sum()
+    losses = (rm <= 0).sum()
+    win_rate = wins / len(rm) if len(rm) > 0 else 0
+    gp = rm[rm > 0].sum()
+    gl = abs(rm[rm < 0].sum())
+    pf = gp / gl if gl > 0 else float('inf')
+    avg_win  = rm[rm > 0].mean() if wins > 0 else 0
+    avg_loss = abs(rm[rm < 0].mean()) if losses > 0 else 1
+    payoff   = avg_win / avg_loss if avg_loss > 0 else 0
     return {
-        'ticker': ticker, 'data_referencia': str(data_ref),
-        'preco_atual': preco_atual, 'prob_alta': prob_alta,
-        'prob_queda': prob_queda, 'sinal': sinal, 'confianca': confianca,
-        'threshold': threshold, 'rsi': rsi_atual, 'vol_20': vol_20,
-        'retorno_hoje': retorno_hoje,
+        'Retorno Total': ret_total, 'Retorno B&H': ret_bh,
+        'Sharpe Ratio': sharpe, 'Sortino Ratio': sortino,
+        'Max Drawdown': max_dd, 'Win Rate': win_rate,
+        'Profit Factor': pf, 'Payoff': payoff,
+        'equity': equity, 'equity_bh': equity_bh, 'drawdown': drawdown,
     }
 
-# ==============================================================================
-# FUNÇÃO PRINCIPAL: processar_estrategia (encapsula TODO o pipeline do Colab)
-# ==============================================================================
-def processar_estrategia(
-        ticker: str,
-        anos: int = 5,
-        interval: str = "1d",
-        max_features: int = 60,
-        usar_ensemble: bool = False,
-        run_walk_forward: bool = True,
-        # ── Gestão de risco ─────────────────────────────────────
-        capital_inicial: float = _DEFAULT_CAPITAL_INICIAL,
-        risco_por_trade: float = _DEFAULT_RISCO_POR_TRADE,
-        stop_loss_pct: float = _DEFAULT_STOP_LOSS_PCT,
-        take_profit_pct: float = _DEFAULT_TAKE_PROFIT_PCT,
-        # ── Custos ──────────────────────────────────────────────
-        spread_pips: float = _DEFAULT_SPREAD_PIPS,
-        slippage: float = _DEFAULT_SLIPPAGE,
-        custo_operacional: float = _DEFAULT_CUSTO_OPERACIONAL,
-        # ── Split / modelo ──────────────────────────────────────
-        train_ratio: float = _DEFAULT_TRAIN_RATIO,
-        val_ratio: float = _DEFAULT_VAL_RATIO,
-        correlacao_max: float = _DEFAULT_CORRELACAO_MAX,
-        # ── Walk-forward ────────────────────────────────────────
-        wf_n_splits: int = _DEFAULT_WF_N_SPLITS,
-        wf_test_size: int = _DEFAULT_WF_TEST_SIZE,
-    ):
-    """
-    Pipeline completo de ML para trading — mesma lógica do Colab.
-    Todos os parâmetros críticos são recebidos da sidebar (não mais hardcoded).
-    """
-    logs = []
-    def log(msg):
-        logs.append(msg)
-
-    log(f"📥 Baixando dados de {ticker}...")
-    df_raw = baixar_dados(ticker, anos, interval)
-    if df_raw is None or len(df_raw) < 200:
-        raise ValueError(f"Dados insuficientes para {ticker}. Tente outro ativo ou período maior.")
-
-    log(f"🧹 Limpando dados ({len(df_raw)} barras)...")
-    df = limpar_dados(df_raw)
-
-    log("🎯 Construindo target...")
-    df = construir_target(df)
-
-    log("⚙️ Engenharia de features...")
-    df = engenharia_de_features(df)
-
-    log("🔍 Selecionando features (Mutual Information)...")
-    features_sel, mi_ranking = selecionar_features(
-        df, max_features=max_features, correlacao_max=correlacao_max)
-    if len(features_sel) == 0:
-        raise ValueError("Nenhuma feature válida encontrada. Verifique os dados.")
-
-    log(f"📐 {len(features_sel)} features selecionadas. Preparando dataset...")
-    X, y, datas, closes, retornos = preparar_dataset(df, features_sel)
-
-    # Split com os ratios configurados na sidebar
-    test_ratio = max(1.0 - train_ratio - val_ratio, 0.05)
-    # Re-normalizar para garantir que somam 1
-    total = train_ratio + val_ratio + test_ratio
-    splits = split_temporal(X, y, datas, closes, retornos,
-                             train_r=train_ratio / total,
-                             val_r=val_ratio / total,
-                             test_r=test_ratio / total)
-
-    log("📏 Normalizando (RobustScaler)...")
-    scaler = RobustScaler()
-    X_train_s = scaler.fit_transform(splits['X_train'])
-    X_val_s   = scaler.transform(splits['X_val'])
-    X_test_s  = scaler.transform(splits['X_test'])
-    X_all_s   = scaler.transform(X)
-
-    log("🤖 Treinando modelos...")
-    modelos = criar_modelos()
-    df_resultados, modelos_treinados = treinar_modelos(
-        modelos, X_train_s, splits['y_train'],
-        X_val_s, splits['y_val'],
-        X_test_s, splits['y_test'])
-
-    # Selecionar melhor modelo (lógica do Colab: preferir tree-based)
-    melhor_nome = df_resultados.iloc[0]['Modelo']
-    MODELOS_LINEARES = {'LogReg'}
-    MODELOS_TREE     = {'XGBoost', 'LightGBM', 'CatBoost', 'RandForest', 'DecTree'}
-    if melhor_nome in MODELOS_LINEARES:
-        df_tree = df_resultados[df_resultados['Modelo'].isin(MODELOS_TREE)]
-        if len(df_tree) > 0:
-            roc_top  = df_resultados.iloc[0]['ROC_Test']
-            roc_tree = df_tree.iloc[0]['ROC_Test']
-            if roc_top - roc_tree <= 0.005:
-                melhor_nome = df_tree.iloc[0]['Modelo']
-    melhor_modelo = modelos_treinados[melhor_nome]['modelo']
-
-    log(f"✅ Melhor modelo: {melhor_nome}")
-
-    # Ensemble (opcional)
-    if usar_ensemble:
-        log("🔗 Criando ensemble...")
-        ensembles = criar_ensemble(modelos_treinados, X_val_s, splits['y_val'],
-                                   X_train_s, splits['y_train'])
-    else:
-        ensembles = {}
-
-    log("📊 Avaliando performance...")
-    avaliacao = avaliar_completo(
-        melhor_modelo, X_test_s, splits['y_test'],
-        splits['retornos_test'], splits['closes_test'], splits['datas_test'],
-        spread=spread_pips, slippage_val=slippage, custo_op=custo_operacional)
-
-    log("🎚️ Encontrando threshold ótimo...")
-    prob_threshold, df_threshold = encontrar_threshold_otimo(
-        melhor_modelo, X_test_s, splits['y_test'], splits['retornos_test'])
-
-    log(f"⚡ Executando backtest (threshold={prob_threshold:.0%})...")
-    backtest = backtest_realista(
-        avaliacao['y_pred'], avaliacao['y_prob'],
-        splits['closes_test'], splits['retornos_test'], splits['datas_test'],
-        capital_inicial, prob_threshold, risco_por_trade,
-        stop_loss_pct, take_profit_pct, spread_pips, slippage)
-
-    wf_resultados = None
-    if run_walk_forward:
-        log("🔄 Walk-Forward Validation...")
-        try:
-            wf_resultados = walk_forward_validation(
-                X_all_s, y, datas, retornos, prob_threshold,
-                WF_N_SPLITS, WF_TEST_SIZE)
-        except Exception as e:
-            log(f"⚠️ Walk-Forward ignorado: {e}")
-
-    log("🔮 Gerando previsão para próximo dia...")
-    previsao = predict_next_day(ticker, melhor_modelo, scaler, features_sel, prob_threshold)
-
-    log("✅ Pipeline concluído!")
-    return {
-        'ticker': ticker, 'df': df, 'splits': splits,
-        'features_sel': features_sel, 'mi_ranking': mi_ranking,
-        'df_resultados': df_resultados, 'modelos_treinados': modelos_treinados,
-        'melhor_nome': melhor_nome, 'melhor_modelo': melhor_modelo,
-        'avaliacao': avaliacao, 'backtest': backtest,
-        'prob_threshold': prob_threshold, 'df_threshold': df_threshold,
-        'wf_resultados': wf_resultados, 'previsao': previsao,
-        'scaler': scaler, 'logs': logs,
-        'datas': datas, 'closes': closes, 'retornos': retornos, 'y': y,
-    }
 
 # ==============================================================================
-# HELPERS DE PLOTAGEM (Plotly dark)
+# SIDEBAR — TODOS OS PARÂMETROS EDITÁVEIS
 # ==============================================================================
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor='#111520', plot_bgcolor='#0b0e14',
-    font=dict(family='JetBrains Mono, monospace', color='#94a3b8', size=11),
-    xaxis=dict(gridcolor='#1e2535', linecolor='#1e2535', zeroline=False),
-    yaxis=dict(gridcolor='#1e2535', linecolor='#1e2535', zeroline=False),
-    margin=dict(l=50, r=20, t=50, b=40),
-    legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1e2535', borderwidth=1),
-)
 
-def plot_equity_curve(avaliacao, backtest, splits, ticker, melhor_nome):
-    mf = avaliacao['metricas_fin']
-    datas_test = splits['datas_test']
-    eq_mod  = mf['equity'].values
-    eq_bh   = mf['equity_bh'].values
-    n = min(len(datas_test), len(eq_mod))
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                         row_heights=[0.7, 0.3],
-                         vertical_spacing=0.04)
-    fig.add_trace(go.Scatter(
-        x=datas_test[:n], y=eq_mod[:n], name='Modelo ML',
-        line=dict(color='#3b82f6', width=2.5),
-        fill='tonexty', fillcolor='rgba(59,130,246,0.06)'), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=datas_test[:n], y=eq_bh[:n], name='Buy & Hold',
-        line=dict(color='#f59e0b', width=1.8, dash='dot')), row=1, col=1)
-    fig.add_hline(y=CAPITAL_INICIAL, line_dash='dash',
-                  line_color='rgba(148,163,184,0.3)', row=1, col=1)
-    dd_vals = mf['drawdown'].values[:n] * 100
-    fig.add_trace(go.Scatter(
-        x=datas_test[:n], y=dd_vals, name='Drawdown',
-        fill='tozeroy', fillcolor='rgba(239,68,68,0.2)',
-        line=dict(color='#ef4444', width=1.5)), row=2, col=1)
-    layout = {**PLOTLY_LAYOUT,
-              'title': dict(text=f'<b>Equity Curve — {ticker} | {melhor_nome}</b>',
-                            font=dict(color='#e2e8f0', size=14)),
-              'height': 500,
-              'yaxis': dict(**PLOTLY_LAYOUT['yaxis'],
-                            tickformat='$,.0f', title='Capital (USD)'),
-              'yaxis2': dict(**PLOTLY_LAYOUT['yaxis'], title='Drawdown (%)'),
-              'hovermode': 'x unified'}
-    fig.update_layout(**layout)
-    return fig
-
-def plot_model_comparison(df_resultados, melhor_nome):
-    df_plot = df_resultados.sort_values('ROC_Test')
-    colors  = ['#3b82f6' if n == melhor_nome else '#1e2535' for n in df_plot['Modelo']]
-    fig = go.Figure(go.Bar(
-        x=df_plot['ROC_Test'], y=df_plot['Modelo'], orientation='h',
-        marker_color=colors,
-        text=[f"{v:.4f}" for v in df_plot['ROC_Test']],
-        textposition='outside', textfont=dict(color='#94a3b8', size=11)))
-    fig.add_vline(x=0.5, line_dash='dash', line_color='#ef4444', annotation_text='Random')
-    fig.update_layout(**PLOTLY_LAYOUT,
-                      title=dict(text='<b>ROC-AUC por Modelo</b>',
-                                 font=dict(color='#e2e8f0', size=13)),
-                      height=350, xaxis_range=[0.45, df_plot['ROC_Test'].max() + 0.05],
-                      showlegend=False)
-    return fig
-
-def plot_confusion_matrix(avaliacao, splits):
-    cm = confusion_matrix(splits['y_test'], avaliacao['y_pred'])
-    labels = ['Queda', 'Alta']
-    fig = go.Figure(go.Heatmap(
-        z=cm, x=labels, y=labels,
-        colorscale=[[0, '#0b0e14'], [0.5, '#1e3a5f'], [1, '#3b82f6']],
-        text=cm, texttemplate='<b>%{text}</b>',
-        textfont=dict(size=22, color='white'),
-        showscale=False))
-    fig.update_layout(**PLOTLY_LAYOUT,
-                      title=dict(text='<b>Confusion Matrix</b>',
-                                 font=dict(color='#e2e8f0', size=13)),
-                      height=320, xaxis_title='Predito', yaxis_title='Real')
-    return fig
-
-def plot_roc_curve(avaliacao, splits):
-    fpr, tpr, _ = roc_curve(splits['y_test'], avaliacao['y_prob'])
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=fpr, y=tpr, name=f"AUC = {avaliacao['roc']:.4f}",
-        line=dict(color='#3b82f6', width=2.5),
-        fill='tozeroy', fillcolor='rgba(59,130,246,0.08)'))
-    fig.add_trace(go.Scatter(
-        x=[0, 1], y=[0, 1], name='Random',
-        line=dict(color='#475569', dash='dash', width=1.5)))
-    fig.update_layout(**PLOTLY_LAYOUT,
-                      title=dict(text='<b>ROC Curve</b>',
-                                 font=dict(color='#e2e8f0', size=13)),
-                      height=320, xaxis_title='FPR', yaxis_title='TPR')
-    return fig
-
-def plot_threshold_analysis(df_threshold, thr_otimo):
-    if df_threshold is None or len(df_threshold) == 0:
-        return None
-    fig = make_subplots(rows=1, cols=2, subplot_titles=['Métricas vs Threshold', '% Sinais vs Threshold'])
-    for col_name, color in [('f1','#3b82f6'), ('prec','#10b981'), ('rec','#f59e0b'), ('acc','#8b5cf6')]:
-        fig.add_trace(go.Scatter(
-            x=df_threshold['threshold'], y=df_threshold[col_name],
-            name=col_name.upper(), line=dict(color=color, width=2)), row=1, col=1)
-    fig.add_vline(x=thr_otimo, line_dash='dash', line_color='#ef4444',
-                  annotation_text=f'Ótimo={thr_otimo:.2f}')
-    fig.add_trace(go.Bar(
-        x=df_threshold['threshold'], y=df_threshold['pct_sinais'] * 100,
-        name='% Sinais', marker_color='#06b6d4', opacity=0.7), row=1, col=2)
-    fig.update_layout(**PLOTLY_LAYOUT, height=350,
-                      title=dict(text='<b>Análise de Threshold</b>',
-                                 font=dict(color='#e2e8f0', size=13)))
-    return fig
-
-def plot_feature_importance(mi_ranking, n=20):
-    top = mi_ranking.head(n).sort_values()
-    colors = ['#3b82f6' if i >= len(top) - 5 else '#1e2535' for i in range(len(top))]
-    fig = go.Figure(go.Bar(
-        x=top.values, y=top.index, orientation='h',
-        marker_color=colors,
-        text=[f"{v:.4f}" for v in top.values],
-        textposition='outside', textfont=dict(color='#94a3b8', size=10)))
-    fig.update_layout(**PLOTLY_LAYOUT,
-                      title=dict(text=f'<b>Top {n} Features (Mutual Information)</b>',
-                                 font=dict(color='#e2e8f0', size=13)),
-                      height=500, showlegend=False)
-    return fig
-
-def plot_walk_forward(wf_resultados):
-    if wf_resultados is None:
-        return None
-    df_wf = wf_resultados['df_wf']
-    fig = make_subplots(rows=1, cols=3,
-                         subplot_titles=['ROC-AUC por Fold', 'Accuracy por Fold', 'Retorno por Fold'])
-    for col_idx, (col, color) in enumerate([('ROC-AUC', '#3b82f6'), ('Accuracy', '#10b981'), ('Retorno', '#f59e0b')], 1):
-        vals = df_wf[col].values * (100 if col == 'Retorno' else 1)
-        bar_colors = ['#ef4444' if v < 0 else color for v in vals]
-        fig.add_trace(go.Bar(
-            x=[f"Fold {i}" for i in df_wf['Fold']], y=vals,
-            marker_color=bar_colors, name=col,
-            text=[f"{v:.2f}{'%' if col=='Retorno' else ''}" for v in vals],
-            textposition='outside', textfont=dict(color='#94a3b8', size=10)), row=1, col=col_idx)
-    fig.update_layout(**PLOTLY_LAYOUT, height=350,
-                      title=dict(text='<b>Walk-Forward Validation</b>',
-                                 font=dict(color='#e2e8f0', size=13)),
-                      showlegend=False)
-    return fig
-
-def plot_returns_dist(retornos_test):
-    fig = go.Figure()
-    fig.add_trace(go.Histogram(
-        x=retornos_test, nbinsx=60, name='Retornos',
-        marker_color='#3b82f6', opacity=0.75,
-        histnorm='probability density'))
-    mu, std = retornos_test.mean(), retornos_test.std()
-    x_norm = np.linspace(mu - 4*std, mu + 4*std, 200)
-    from scipy.stats import norm as sci_norm
-    fig.add_trace(go.Scatter(
-        x=x_norm, y=sci_norm.pdf(x_norm, mu, std),
-        name='Normal', line=dict(color='#f59e0b', width=2)))
-    fig.add_vline(x=0, line_dash='dash', line_color='#ef4444', opacity=0.6)
-    fig.update_layout(**PLOTLY_LAYOUT,
-                      title=dict(text='<b>Distribuição dos Retornos</b>',
-                                 font=dict(color='#e2e8f0', size=13)),
-                      height=320, xaxis_title='Retorno (%)', yaxis_title='Densidade')
-    return fig
-
-# ==============================================================================
-# SIDEBAR — Configuração completa com todos os parâmetros do backtest
-# ==============================================================================
 with st.sidebar:
-    st.markdown('<div class="sidebar-title">⚡ QUANT ML</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-subtitle">Trading Intelligence System v4.0</div>', unsafe_allow_html=True)
+    st.markdown("## ⚙️ Configurações")
 
-    # ── 1. ATIVO E DADOS ──────────────────────────────────────────────────────
-    st.markdown('<div class="section-header">① ATIVO & DADOS</div>', unsafe_allow_html=True)
+    # ── ATIVO & DADOS ────────────────────────────────────────────────────────
+    st.markdown("### 📌 Ativo & Dados")
 
-    TICKERS_POPULARES = [
-        "USDJPY=X", "EURUSD=X", "GBPUSD=X", "AUDUSD=X",
-        "BTC-USD", "ETH-USD",
-        "^GSPC", "^IXIC", "^BVSP",
+    TICKERS_SUGERIDOS = [
+        "USDJPY=X", "EURUSD=X", "GBPUSD=X", "BTCUSDT-USD", "BTC-USD",
+        "^GSPC", "^IXIC", "^BVSP", "GC=F", "CL=F",
         "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META",
-        "PETR4.SA", "VALE3.SA", "ITUB4.SA", "BBDC4.SA",
-        "GC=F", "CL=F",
+        "PETR4.SA", "VALE3.SA", "ITUB4.SA",
     ]
-    ticker_input = st.selectbox(
-        "🎯 Ativo (Ticker)", options=TICKERS_POPULARES, index=0,
-        help="Selecione ou digite qualquer ticker válido do Yahoo Finance")
-    ticker_custom = st.text_input("Ou ticker personalizado:", placeholder="ex: PETR4.SA")
-    ticker = ticker_custom.upper().strip() if ticker_custom.strip() else ticker_input
+    TICKER = st.selectbox("Ativo (Ticker)", options=TICKERS_SUGERIDOS,
+                          index=0, help="Selecione ou insira o símbolo")
+    TICKER_CUSTOM = st.text_input("Ou insira um ticker personalizado:", value="",
+                                  placeholder="Ex: AAPL, EURUSD=X, BTC-USD")
+    if TICKER_CUSTOM.strip():
+        TICKER = TICKER_CUSTOM.strip().upper()
 
-    anos = st.select_slider("📅 Histórico (anos)", options=[2, 3, 5, 7, 10], value=5)
+    ANOS_HISTORICO = st.slider("Anos de histórico", 1, 15, 5,
+                                help="Quantidade de anos de dados para download")
 
-    interval_map   = {"Diário (1d)": "1d", "Semanal (1wk)": "1wk"}
-    interval_label = st.selectbox("⏱ Timeframe", list(interval_map.keys()))
-    interval       = interval_map[interval_label]
+    TIMEFRAME_MAP = {"Diário (1d)": "1d", "Semanal (1wk)": "1wk", "Mensal (1mo)": "1mo"}
+    TIMEFRAME = TIMEFRAME_MAP[st.selectbox("Timeframe", list(TIMEFRAME_MAP.keys()))]
 
-    st.markdown("---")
+    MAX_FEATURES = st.slider("Nº máx. de features", 20, 80, 50,
+                             help="Quantidade de features selecionadas por Mutual Information")
 
-    # ── 2. GESTÃO DE RISCO & CAPITAL ──────────────────────────────────────────
-    st.markdown('<div class="section-header">② GESTÃO DE RISCO & CAPITAL</div>', unsafe_allow_html=True)
+    # ── SPLIT TEMPORAL ──────────────────────────────────────────────────────
+    st.markdown("### 📊 Split Temporal")
+    col1s, col2s = st.columns(2)
+    with col1s:
+        TRAIN_RATIO = st.number_input("Treino %", 0.50, 0.85, 0.70, 0.05,
+                                      format="%.2f")
+    with col2s:
+        VAL_RATIO = st.number_input("Val %", 0.05, 0.25, 0.15, 0.05,
+                                    format="%.2f")
+    TEST_RATIO = round(1.0 - TRAIN_RATIO - VAL_RATIO, 2)
+    st.caption(f"🔢 Teste: **{TEST_RATIO:.0%}** (calculado automaticamente)")
+    if TEST_RATIO <= 0:
+        st.error("⚠ Treino + Val não pode ultrapassar 100%!")
 
-    CAPITAL_INICIAL = st.number_input(
-        "💰 Capital Inicial (USD)",
-        min_value=1_000, max_value=10_000_000,
-        value=_DEFAULT_CAPITAL_INICIAL, step=5_000,
-        help="Capital inicial simulado para o backtest")
-
-    RISCO_POR_TRADE = st.slider(
-        "🎲 Risco por Trade (%)",
-        min_value=0.5, max_value=10.0,
-        value=float(_DEFAULT_RISCO_POR_TRADE * 100), step=0.5,
-        format="%.1f%%",
-        help="Percentual do capital arriscado por operação (position sizing)") / 100.0
-
-    col_sl, col_tp = st.columns(2)
-    with col_sl:
-        STOP_LOSS_PCT = st.number_input(
-            "🛑 Stop Loss (%)",
-            min_value=0.1, max_value=20.0,
-            value=float(_DEFAULT_STOP_LOSS_PCT * 100), step=0.1,
-            format="%.1f",
-            help="Stop Loss em % — encerra posição perdedora") / 100.0
-    with col_tp:
-        TAKE_PROFIT_PCT = st.number_input(
-            "🎯 Take Profit (%)",
-            min_value=0.1, max_value=50.0,
-            value=float(_DEFAULT_TAKE_PROFIT_PCT * 100), step=0.1,
-            format="%.1f",
-            help="Take Profit em % — encerra posição ganhadora") / 100.0
-
-    # Validação R:R ratio
-    rr_ratio = TAKE_PROFIT_PCT / STOP_LOSS_PCT if STOP_LOSS_PCT > 0 else 0
-    rr_color = "#10b981" if rr_ratio >= 2 else ("#f59e0b" if rr_ratio >= 1 else "#ef4444")
-    st.markdown(f"""
-    <div style="background:#111520; border:1px solid #1e2535; border-radius:8px;
-                padding:8px 12px; margin:-4px 0 8px 0; display:flex; justify-content:space-between;">
-        <span style="font-size:10px; color:#475569; font-family:JetBrains Mono;">R:R RATIO</span>
-        <span style="font-size:12px; font-weight:700; color:{rr_color}; font-family:JetBrains Mono;">
-            1 : {rr_ratio:.1f}
-        </span>
-    </div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── 3. CUSTOS OPERACIONAIS ────────────────────────────────────────────────
-    st.markdown('<div class="section-header">③ CUSTOS OPERACIONAIS</div>', unsafe_allow_html=True)
-
-    col_sp, col_sl2 = st.columns(2)
-    with col_sp:
-        SPREAD_PIPS = st.number_input(
-            "📊 Spread",
-            min_value=0.0, max_value=0.01,
-            value=_DEFAULT_SPREAD_PIPS, step=0.0001,
-            format="%.4f",
-            help="Spread do ativo (ex: 0.0002 = 2 pips para Forex)") 
-    with col_sl2:
-        SLIPPAGE = st.number_input(
-            "💨 Slippage",
-            min_value=0.0, max_value=0.005,
-            value=_DEFAULT_SLIPPAGE, step=0.0001,
-            format="%.4f",
-            help="Slippage estimado por execução")
-
-    CUSTO_OPERACIONAL = st.number_input(
-        "🏦 Custo Operacional (por trade)",
-        min_value=0.0, max_value=0.005,
-        value=_DEFAULT_CUSTO_OPERACIONAL, step=0.00005,
-        format="%.5f",
-        help="Comissão/taxa por operação (ex: 0.0001 = 0.01%)")
-
-    # Custo total estimado por trade
-    custo_total_est = SPREAD_PIPS + SLIPPAGE + CUSTO_OPERACIONAL
-    st.markdown(f"""
-    <div style="background:#111520; border:1px solid #1e2535; border-radius:8px;
-                padding:8px 12px; margin:-4px 0 8px 0; display:flex; justify-content:space-between;">
-        <span style="font-size:10px; color:#475569; font-family:JetBrains Mono;">CUSTO TOTAL/TRADE</span>
-        <span style="font-size:12px; font-weight:700; color:#f59e0b; font-family:JetBrains Mono;">
-            {custo_total_est:.4f} ({custo_total_est*100:.3f}%)
-        </span>
-    </div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── 4. PARÂMETROS DO MODELO ───────────────────────────────────────────────
-    st.markdown('<div class="section-header">④ MODELO & FEATURES</div>', unsafe_allow_html=True)
-
-    max_features = st.slider(
-        "🔢 Max Features (MI)", 20, 80, 60, step=5,
-        help="Número máximo de features selecionadas por Mutual Information")
-
-    col_tr, col_vl = st.columns(2)
-    with col_tr:
-        TRAIN_RATIO = st.number_input(
-            "📚 Treino (%)", min_value=50, max_value=80,
-            value=int(_DEFAULT_TRAIN_RATIO * 100), step=5,
-            help="Proporção do dataset para treino") / 100.0
-    with col_vl:
-        VAL_RATIO = st.number_input(
-            "📋 Validação (%)", min_value=5, max_value=25,
-            value=int(_DEFAULT_VAL_RATIO * 100), step=5,
-            help="Proporção do dataset para validação") / 100.0
-
-    test_ratio_calc = 1.0 - TRAIN_RATIO - VAL_RATIO
-    test_ratio_color = "#10b981" if test_ratio_calc > 0.05 else "#ef4444"
-    st.markdown(f"""
-    <div style="background:#111520; border:1px solid #1e2535; border-radius:8px;
-                padding:8px 12px; margin:-4px 0 8px 0; display:flex; justify-content:space-between;">
-        <span style="font-size:10px; color:#475569; font-family:JetBrains Mono;">TESTE (calculado)</span>
-        <span style="font-size:12px; font-weight:700; color:{test_ratio_color}; font-family:JetBrains Mono;">
-            {max(test_ratio_calc, 0):.0%}
-        </span>
-    </div>""", unsafe_allow_html=True)
-
-    CORRELACAO_MAX = st.slider(
-        "🔗 Correlação Máx. entre Features",
-        min_value=0.70, max_value=0.99,
-        value=float(_DEFAULT_CORRELACAO_MAX), step=0.01,
+    # ── THRESHOLD DE PROBABILIDADE ──────────────────────────────────────────
+    st.markdown("### 🎯 Threshold de Probabilidade")
+    PROB_THRESHOLD = st.slider(
+        "Prob. mínima para operar",
+        min_value=0.50, max_value=0.90, value=0.55, step=0.01,
         format="%.2f",
-        help="Features com correlação de Pearson acima deste valor são removidas")
+        help="O modelo só entra em posição se a probabilidade for maior que este valor. "
+             "Valores mais altos = menos trades, mais seletivo."
+    )
+    st.caption(f"Neutro se prob ∈ [{1-PROB_THRESHOLD:.2f}, {PROB_THRESHOLD:.2f}]")
+
+    # ── GESTÃO DE RISCO ─────────────────────────────────────────────────────
+    st.markdown("### 🛡️ Gestão de Risco")
+    CAPITAL_INICIAL = st.number_input(
+        "Capital inicial (USD)", 1_000, 10_000_000, 100_000, 1_000,
+        help="Capital inicial para simulação do backtest"
+    )
+    RISCO_POR_TRADE = st.slider(
+        "Risco por trade (%)", 0.005, 0.10, 0.02, 0.005, format="%.3f",
+        help="Percentual do capital arriscado em cada operação (Kelly / position sizing)"
+    )
+
+    # ── STOP LOSS & TAKE PROFIT ─────────────────────────────────────────────
+    st.markdown("### 🔴🟢 Stop Loss & Take Profit")
+    STOP_LOSS_PCT = st.slider(
+        "Stop Loss (%)", 0.005, 0.10, 0.02, 0.005, format="%.3f",
+        help="Se o trade atingir essa perda, a posição é encerrada automaticamente"
+    )
+    TAKE_PROFIT_PCT = st.slider(
+        "Take Profit (%)", 0.01, 0.20, 0.04, 0.005, format="%.3f",
+        help="Se o trade atingir esse ganho, a posição é encerrada com lucro"
+    )
+    RR_RATIO = TAKE_PROFIT_PCT / STOP_LOSS_PCT if STOP_LOSS_PCT > 0 else 0
+    st.caption(f"📐 Risco/Retorno: **1:{RR_RATIO:.1f}** "
+               f"({'✅ Favorável' if RR_RATIO >= 2 else '⚠ Baixo'})")
+
+    # ── CUSTOS OPERACIONAIS ─────────────────────────────────────────────────
+    st.markdown("### 💸 Custos Operacionais")
+    SPREAD_PIPS = st.number_input(
+        "Spread (%)", 0.0, 0.005, 0.0002, 0.0001, format="%.4f",
+        help="Spread do broker em percentual (ex: 0.0002 = 2 pips aprox.)"
+    )
+    SLIPPAGE = st.number_input(
+        "Slippage (%)", 0.0, 0.005, 0.0001, 0.0001, format="%.4f",
+        help="Derrapagem estimada na execução da ordem"
+    )
+    CUSTO_OPERACIONAL = st.number_input(
+        "Custo operacional (%)", 0.0, 0.005, 0.0001, 0.0001, format="%.4f",
+        help="Custo por operação (corretagem, impostos estimados etc.)"
+    )
+    custo_total_pct = (SPREAD_PIPS + SLIPPAGE + CUSTO_OPERACIONAL) * 100
+    st.caption(f"💰 Custo total por operação: **{custo_total_pct:.4f}%**")
+
+    # ── INDICADORES TÉCNICOS (PARÂMETROS) ────────────────────────────────────
+    st.markdown("### 📈 Parâmetros dos Indicadores")
+    with st.expander("🔧 Z-Score & Bollinger"):
+        ZSCORE_JANELA_CURTA = st.slider("Z-Score — janela curta (dias)", 5, 40, 20,
+            help="Janela do rolling Z-Score de curto prazo")
+        ZSCORE_JANELA_LONGA = st.slider("Z-Score — janela longa (dias)", 30, 120, 60,
+            help="Janela do rolling Z-Score de longo prazo")
+        BOLLINGER_JANELA    = st.slider("Bollinger — janela (dias)", 10, 50, 20,
+            help="Período da média central das Bandas de Bollinger")
+        BOLLINGER_STD       = st.slider("Bollinger — desvios padrão", 1.0, 3.5, 2.0, 0.1,
+            help="Multiplicador do desvio padrão para as bandas superior/inferior")
+        REGIME_VOL_THRESH   = st.slider("Regime alta volatilidade (mult.)", 1.0, 2.5, 1.2, 0.1,
+            help="Multiplier: vol_5 / vol_20 acima deste valor → regime de alta volatilidade")
+        ADX_TENDENCIA_THRESH= st.slider("ADX — limiar de tendência", 15, 40, 25,
+            help="ADX acima deste valor indica mercado em tendência forte")
+
+    with st.expander("📉 RSI & Stochastic"):
+        RSI_SOBRECOMPRADO   = st.slider("RSI — sobrecomprado", 60, 90, 70,
+            help="Nível de RSI considerado sobrecomprado (venda potencial)")
+        RSI_SOBREVENDIDO    = st.slider("RSI — sobrevendido",  10, 45, 30,
+            help="Nível de RSI considerado sobrevendido (compra potencial)")
+
+    with st.expander("🔄 Walk-Forward"):
+        WF_N_SPLITS  = st.slider("Walk-Forward — nº de splits", 3, 10, 5,
+            help="Número de janelas na validação walk-forward")
+        WF_TEST_SIZE = st.slider("Walk-Forward — dias de teste/janela", 20, 120, 60,
+            help="Quantidade de dias no período de teste de cada janela")
+
+    with st.expander("🧠 Seleção de Features"):
+        CORRELACAO_MAX = st.slider(
+            "Correlação máx. entre features", 0.70, 0.99, 0.95, 0.01,
+            help="Features com correlação de Pearson acima deste valor são removidas "
+                 "(reduz multicolinearidade)"
+        )
+        NAN_THRESHOLD = st.slider(
+            "Threshold NaN (%)", 0.10, 0.50, 0.30, 0.05,
+            help="Features com mais do que este % de valores NaN são descartadas"
+        )
 
     st.markdown("---")
-
-    # ── 5. INDICADORES TÉCNICOS ───────────────────────────────────────────────
-    st.markdown('<div class="section-header">⑤ INDICADORES TÉCNICOS</div>', unsafe_allow_html=True)
-
-    with st.expander("📐 Períodos dos Indicadores", expanded=False):
-        col_rsi, col_atr = st.columns(2)
-        with col_rsi:
-            RSI_PERIOD = st.selectbox(
-                "RSI Principal", options=[7, 9, 14, 21],
-                index=1,   # default 14
-                help="Período do RSI usado como feature principal e no sinal")
-        with col_atr:
-            ATR_PERIOD = st.selectbox(
-                "ATR Principal", options=[7, 10, 14, 21],
-                index=2,   # default 14
-                help="Período do ATR (Average True Range)")
-
-        col_zs, col_bb = st.columns(2)
-        with col_zs:
-            ZSCORE_PERIOD = st.selectbox(
-                "Z-Score Período", options=[10, 20, 30, 60],
-                index=1,   # default 20
-                help="Janela para cálculo do Z-Score de reversão à média")
-        with col_bb:
-            BB_PERIOD = st.selectbox(
-                "Bollinger Bands", options=[10, 14, 20, 30],
-                index=2,   # default 20
-                help="Período das Bandas de Bollinger")
-
-    st.markdown("---")
-
-    # ── 6. WALK-FORWARD ───────────────────────────────────────────────────────
-    st.markdown('<div class="section-header">⑥ WALK-FORWARD & AVANÇADO</div>', unsafe_allow_html=True)
-
-    run_wf = st.checkbox("🔄 Walk-Forward Validation", value=True,
-                          help="Valida o modelo OOS com expanding window (mais lento)")
-
-    if run_wf:
-        col_wf1, col_wf2 = st.columns(2)
-        with col_wf1:
-            WF_N_SPLITS = st.number_input(
-                "Nº Folds", min_value=3, max_value=10,
-                value=_DEFAULT_WF_N_SPLITS, step=1,
-                help="Número de janelas walk-forward")
-        with col_wf2:
-            WF_TEST_SIZE = st.number_input(
-                "Dias Teste/Fold", min_value=20, max_value=252,
-                value=_DEFAULT_WF_TEST_SIZE, step=10,
-                help="Dias de teste em cada janela walk-forward")
-    else:
-        WF_N_SPLITS  = _DEFAULT_WF_N_SPLITS
-        WF_TEST_SIZE = _DEFAULT_WF_TEST_SIZE
-
-    usar_ensemble = st.checkbox(
-        "🔗 Usar Ensemble (Voting + Ponderado)", value=False,
-        help="Combina múltiplos modelos. Aumenta performance mas é mais lento")
-
-    st.markdown("---")
-
-    # ── BOTÃO EXECUTAR ─────────────────────────────────────────────────────────
-    # Resumo dos parâmetros críticos antes do botão
-    st.markdown(f"""
-    <div style="background:#0d1117; border:1px solid #1e2535; border-radius:10px;
-                padding:12px 14px; margin-bottom:12px; font-family:JetBrains Mono; font-size:10px;">
-        <div style="color:#475569; letter-spacing:0.1em; margin-bottom:8px;">RESUMO DOS PARÂMETROS</div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">
-            <span style="color:#64748b;">Capital</span>
-            <span style="color:#94a3b8; text-align:right;">${CAPITAL_INICIAL:,.0f}</span>
-            <span style="color:#64748b;">Stop Loss</span>
-            <span style="color:#ef4444; text-align:right;">{STOP_LOSS_PCT:.1%}</span>
-            <span style="color:#64748b;">Take Profit</span>
-            <span style="color:#10b981; text-align:right;">{TAKE_PROFIT_PCT:.1%}</span>
-            <span style="color:#64748b;">Risco/Trade</span>
-            <span style="color:#f59e0b; text-align:right;">{RISCO_POR_TRADE:.1%}</span>
-            <span style="color:#64748b;">Spread+Slip</span>
-            <span style="color:#8b5cf6; text-align:right;">{(SPREAD_PIPS+SLIPPAGE)*100:.3f}%</span>
-            <span style="color:#64748b;">R:R</span>
-            <span style="color:{rr_color}; text-align:right;">1:{rr_ratio:.1f}</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    executar = st.button("🚀  EXECUTAR BACKTEST", use_container_width=True)
-
-    st.markdown("---")
+    executar = st.button("🚀 Executar Backtest", use_container_width=True)
     st.markdown("""
-    <div style="font-size:10px; color: #475569; line-height: 1.6; font-family: var(--font-mono);">
-    ⚠️ <b style="color:#94a3b8">DISCLAIMER</b><br>
-    Este sistema é exclusivamente para fins educacionais e de pesquisa quantitativa.<br><br>
-    NÃO constitui recomendação de investimento. Resultados passados não garantem retornos futuros.
+    <div class='info-box'>
+    ⏱ Dados atualizados automaticamente a cada 60s via cache.<br>
+    Clique em <strong>Executar Backtest</strong> para re-treinar o modelo com os parâmetros atuais.
     </div>
     """, unsafe_allow_html=True)
 
 # ==============================================================================
-# MAIN CONTENT
+# CABEÇALHO PRINCIPAL
 # ==============================================================================
 
-# Header
-st.markdown("""
-<div style="padding: 24px 0 16px 0;">
-    <div style="font-family: 'Syne', sans-serif; font-size: 32px; font-weight: 800;
-                background: linear-gradient(135deg, #3b82f6 0%, #06b6d4 50%, #10b981 100%);
-                -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-                margin-bottom: 4px;">
-        Sistema Quantitativo de ML para Trading
-    </div>
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #475569;
-                letter-spacing: 0.1em;">
-        PIPELINE COMPLETO · FEATURE ENGINEERING · ENSEMBLE · BACKTEST REALISTA · WALK-FORWARD
-    </div>
+st.markdown(f"""
+<div class='dash-title'>📊 Quant ML Trading Dashboard</div>
+<div class='dash-subtitle'>
+Sistema quantitativo de Machine Learning para previsão direcional · Ativo: <strong>{TICKER}</strong> · 
+Dados: Yahoo Finance · Atualização a cada 60s
 </div>
 """, unsafe_allow_html=True)
 
-# Auto-refresh (a cada 5 min se houver resultados)
-try:
-    from streamlit_autorefresh import st_autorefresh
-    if 'resultado' in st.session_state and st.session_state.resultado is not None:
-        refresh_interval = st.sidebar.select_slider(
-            "🔄 Auto-refresh (min)", options=[1, 5, 10, 30], value=5)
-        st_autorefresh(interval=refresh_interval * 60 * 1000, key="autorefresh")
-except ImportError:
-    pass
+# ==============================================================================
+# EXECUÇÃO DO PIPELINE
+# ==============================================================================
 
-# Inicializar session state
-if 'resultado' not in st.session_state:
-    st.session_state.resultado = None
-
-# ── Executar pipeline ──────────────────────────────────────────────────────────
-if executar:
-    st.session_state.resultado = None
-    progress_container = st.empty()
-    log_container      = st.empty()
-    with progress_container.container():
-        prog_bar = st.progress(0)
-        status   = st.empty()
-
-    try:
-        status.markdown(f"<div style='color:#94a3b8; font-family:JetBrains Mono; font-size:12px;'>Iniciando pipeline para <b style='color:#3b82f6'>{ticker}</b>...</div>", unsafe_allow_html=True)
-
-        def update_progress(step, total, msg):
-            prog_bar.progress(int(step / total * 100))
-            status.markdown(f"<div style='color:#94a3b8; font-family:JetBrains Mono; font-size:12px;'>{msg}</div>", unsafe_allow_html=True)
-
-        update_progress(1, 10, f"📥 Baixando dados: {ticker} ({anos} anos)...")
-        resultado = processar_estrategia(
-            ticker=ticker, anos=anos, interval=interval,
-            max_features=max_features, usar_ensemble=usar_ensemble,
-            run_walk_forward=run_wf)
-        update_progress(10, 10, "✅ Pipeline concluído!")
-        st.session_state.resultado = resultado
-        progress_container.empty()
-        log_container.empty()
-
-    except Exception as e:
-        progress_container.empty()
-        st.error(f"❌ Erro no pipeline: {str(e)}")
-        st.stop()
-
-# ── Exibir resultados ──────────────────────────────────────────────────────────
-if st.session_state.resultado is not None:
-    r = st.session_state.resultado
-
-    ticker_display = r['ticker']
-    previsao       = r['previsao']
-    avaliacao      = r['avaliacao']
-    backtest       = r['backtest']
-    melhor_nome    = r['melhor_nome']
-    splits         = r['splits']
-    mf             = avaliacao['metricas_fin']
-    thr            = r['prob_threshold']
-
-    # ── SINAL PRINCIPAL ────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">🔮 SINAL PARA O PRÓXIMO DIA</div>', unsafe_allow_html=True)
-
-    signal_class = {'BUY': 'signal-buy', 'SELL': 'signal-sell', 'NEUTRAL': 'signal-neutral'}[previsao['sinal']]
-    signal_emoji = {'BUY': '🟢 COMPRA', 'SELL': '🔴 VENDA', 'NEUTRAL': '⚪ NEUTRO'}[previsao['sinal']]
-
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        st.markdown(f"""
-        <div class="metric-card blue">
-            <div class="metric-label">Sinal</div>
-            <div class="metric-value neu"><span class="signal-badge {signal_class}">{signal_emoji}</span></div>
-            <div class="metric-sub">Threshold: {thr:.0%}</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class="metric-card green">
-            <div class="metric-label">Prob. Alta ↑</div>
-            <div class="metric-value {'pos' if previsao['prob_alta'] > 0.5 else 'neg'}">{previsao['prob_alta']:.1%}</div>
-            <div class="metric-sub">vs 50% aleatório</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class="metric-card red">
-            <div class="metric-label">Prob. Queda ↓</div>
-            <div class="metric-value {'neg' if previsao['prob_queda'] > 0.5 else 'pos'}">{previsao['prob_queda']:.1%}</div>
-            <div class="metric-sub">vs 50% aleatório</div>
-        </div>""", unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"""
-        <div class="metric-card purple">
-            <div class="metric-label">Confiança</div>
-            <div class="metric-value neu">{previsao['confianca']:.1%}</div>
-            <div class="metric-sub">Modelo: {melhor_nome}</div>
-        </div>""", unsafe_allow_html=True)
-    with c5:
-        ret_cor = 'pos' if previsao['retorno_hoje'] > 0 else 'neg'
-        st.markdown(f"""
-        <div class="metric-card yellow">
-            <div class="metric-label">Preço Atual</div>
-            <div class="metric-value neu">{previsao['preco_atual']:.4f}</div>
-            <div class="metric-sub">Retorno hoje: <span class="{ret_cor}">{previsao['retorno_hoje']:+.2f}%</span></div>
-        </div>""", unsafe_allow_html=True)
-    with c6:
-        rsi_cor = 'pos' if previsao['rsi'] < 70 else 'neg'
-        st.markdown(f"""
-        <div class="metric-card cyan">
-            <div class="metric-label">RSI (14)</div>
-            <div class="metric-value {rsi_cor}">{previsao['rsi']:.1f}</div>
-            <div class="metric-sub">Ref: {previsao['data_referencia']}</div>
-        </div>""", unsafe_allow_html=True)
-
-    # ── MÉTRICAS PRINCIPAIS ────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">📊 PERFORMANCE DO BACKTEST</div>', unsafe_allow_html=True)
-
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    ret_cor  = 'pos' if mf['Retorno Total'] > 0 else 'neg'
-    bh_cor   = 'pos' if mf['Retorno B&H'] > 0 else 'neg'
-    sh_cor   = 'pos' if mf['Sharpe Ratio'] > 1 else ('neu' if mf['Sharpe Ratio'] > 0 else 'neg')
-    dd_val   = f"{mf['Max Drawdown']:.1%}"
-    wr_cor   = 'pos' if mf['Win Rate'] > 0.5 else 'neg'
-
-    with m1:
-        st.markdown(f"""
-        <div class="metric-card blue">
-            <div class="metric-label">Retorno Acumulado</div>
-            <div class="metric-value {ret_cor}">{mf['Retorno Total']:+.1%}</div>
-            <div class="metric-sub">B&H: <span class="{bh_cor}">{mf['Retorno B&H']:+.1%}</span></div>
-        </div>""", unsafe_allow_html=True)
-    with m2:
-        st.markdown(f"""
-        <div class="metric-card {'green' if mf['Sharpe Ratio'] > 1 else 'yellow'}">
-            <div class="metric-label">Sharpe Ratio</div>
-            <div class="metric-value {sh_cor}">{mf['Sharpe Ratio']:.3f}</div>
-            <div class="metric-sub">Sortino: {mf['Sortino Ratio']:.3f}</div>
-        </div>""", unsafe_allow_html=True)
-    with m3:
-        st.markdown(f"""
-        <div class="metric-card {'green' if mf['Win Rate'] > 0.5 else 'red'}">
-            <div class="metric-label">Win Rate</div>
-            <div class="metric-value {wr_cor}">{mf['Win Rate']:.1%}</div>
-            <div class="metric-sub">{mf['N Trades']:,} trades</div>
-        </div>""", unsafe_allow_html=True)
-    with m4:
-        st.markdown(f"""
-        <div class="metric-card red">
-            <div class="metric-label">Max Drawdown</div>
-            <div class="metric-value neg">{mf['Max Drawdown']:.1%}</div>
-            <div class="metric-sub">Calmar: {mf['Calmar Ratio']:.2f}</div>
-        </div>""", unsafe_allow_html=True)
-    with m5:
-        pf_cor = 'pos' if mf['Profit Factor'] > 1 else 'neg'
-        pf_val = f"{mf['Profit Factor']:.2f}" if mf['Profit Factor'] != np.inf else "∞"
-        st.markdown(f"""
-        <div class="metric-card purple">
-            <div class="metric-label">Profit Factor</div>
-            <div class="metric-value {pf_cor}">{pf_val}</div>
-            <div class="metric-sub">Payoff: {mf['Payoff']:.2f}</div>
-        </div>""", unsafe_allow_html=True)
-    with m6:
-        roc_cor = 'pos' if avaliacao['roc'] > 0.55 else ('neu' if avaliacao['roc'] > 0.5 else 'neg')
-        st.markdown(f"""
-        <div class="metric-card cyan">
-            <div class="metric-label">ROC-AUC</div>
-            <div class="metric-value {roc_cor}">{avaliacao['roc']:.4f}</div>
-            <div class="metric-sub">Modelo: {melhor_nome}</div>
-        </div>""", unsafe_allow_html=True)
-
-    # ── EQUITY CURVE ───────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">📈 EQUITY CURVE & DRAWDOWN</div>', unsafe_allow_html=True)
-    st.plotly_chart(plot_equity_curve(avaliacao, backtest, splits, ticker_display, melhor_nome),
-                    use_container_width=True)
-
-    # ── BACKTEST REALISTA ──────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">⚡ BACKTEST REALISTA (Com Stop/TP/Spread)</div>', unsafe_allow_html=True)
-    b1, b2, b3, b4, b5 = st.columns(5)
-    bt = backtest
-    with b1:
-        cap_cor = 'pos' if bt['capital_final'] > CAPITAL_INICIAL else 'neg'
-        st.markdown(f"""
-        <div class="metric-card blue">
-            <div class="metric-label">Capital Final</div>
-            <div class="metric-value {cap_cor}">${bt['capital_final']:,.0f}</div>
-            <div class="metric-sub">Inicial: ${CAPITAL_INICIAL:,.0f}</div>
-        </div>""", unsafe_allow_html=True)
-    with b2:
-        r_cor = 'pos' if bt['ret_total'] > 0 else 'neg'
-        st.markdown(f"""
-        <div class="metric-card {'green' if bt['ret_total']>0 else 'red'}">
-            <div class="metric-label">Retorno Backtest</div>
-            <div class="metric-value {r_cor}">{bt['ret_total']:+.2%}</div>
-            <div class="metric-sub">Threshold: {thr:.0%}</div>
-        </div>""", unsafe_allow_html=True)
-    with b3:
-        st.markdown(f"""
-        <div class="metric-card yellow">
-            <div class="metric-label">N° de Trades</div>
-            <div class="metric-value neu">{bt['n_trades']:,}</div>
-            <div class="metric-sub">Sinais filtrados por prob.</div>
-        </div>""", unsafe_allow_html=True)
-    with b4:
-        wr_c = 'pos' if bt['win_rate'] > 0.5 else 'neg'
-        st.markdown(f"""
-        <div class="metric-card {'green' if bt['win_rate']>0.5 else 'red'}">
-            <div class="metric-label">Win Rate (BT)</div>
-            <div class="metric-value {wr_c}">{bt['win_rate']:.1%}</div>
-            <div class="metric-sub">Com custos reais</div>
-        </div>""", unsafe_allow_html=True)
-    with b5:
-        st.markdown(f"""
-        <div class="metric-card red">
-            <div class="metric-label">Max DD (BT)</div>
-            <div class="metric-value neg">{bt['max_dd']:.1%}</div>
-            <div class="metric-sub">Stop: {STOP_LOSS_PCT:.0%} | TP: {TAKE_PROFIT_PCT:.0%}</div>
-        </div>""", unsafe_allow_html=True)
-
-    # Tabela de trades
-    if len(bt['df_trades']) > 0:
-        with st.expander(f"📋 Ver últimos 50 trades ({len(bt['df_trades'])} total)"):
-            df_show = bt['df_trades'].tail(50).copy()
-            df_show['sinal']       = df_show['sinal'].map({1: '🟢 LONG', -1: '🔴 SHORT'})
-            df_show['pnl']         = df_show['pnl'].round(2)
-            df_show['retorno_real']= (df_show['retorno_real'] * 100).round(3)
-            df_show['prob']        = (df_show['prob'] * 100).round(1)
-            st.dataframe(df_show[['data', 'sinal', 'prob', 'preco', 'retorno_real', 'pnl', 'capital']],
-                         use_container_width=True, height=300)
-
-    # ── ANÁLISE DE MODELOS ─────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">🤖 COMPARAÇÃO DE MODELOS</div>', unsafe_allow_html=True)
-    col_a, col_b = st.columns([1.2, 1])
-    with col_a:
-        st.plotly_chart(plot_model_comparison(r['df_resultados'], melhor_nome),
-                        use_container_width=True)
-    with col_b:
-        st.markdown("**Tabela de Resultados**")
-        df_tab = r['df_resultados'][['Modelo','ROC_Test','Acc_Test','F1_Test','Prec_Test','Rec_Test']].copy()
-        df_tab.columns = ['Modelo', 'ROC-AUC', 'Accuracy', 'F1', 'Precision', 'Recall']
-        st.dataframe(df_tab.style.format({
-            'ROC-AUC':   '{:.4f}', 'Accuracy': '{:.4f}',
-            'F1':        '{:.4f}', 'Precision': '{:.4f}', 'Recall': '{:.4f}'
-        }).highlight_max(axis=0, subset=['ROC-AUC', 'Accuracy', 'F1'],
-                         props='background-color: rgba(59,130,246,0.2); color: #3b82f6; font-weight: bold;'),
-                     use_container_width=True, height=280)
-
-    # ── ROC + CONFUSION ────────────────────────────────────────────────────────
-    col_c, col_d, col_e = st.columns(3)
-    with col_c:
-        st.plotly_chart(plot_roc_curve(avaliacao, splits), use_container_width=True)
-    with col_d:
-        st.plotly_chart(plot_confusion_matrix(avaliacao, splits), use_container_width=True)
-    with col_e:
-        st.plotly_chart(plot_returns_dist(splits['retornos_test']), use_container_width=True)
-
-    # ── THRESHOLD ANALYSIS ─────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">🎚 ANÁLISE DE THRESHOLD (OTIMIZAÇÃO AUTOMÁTICA)</div>', unsafe_allow_html=True)
-    fig_thr = plot_threshold_analysis(r['df_threshold'], thr)
-    if fig_thr:
-        st.plotly_chart(fig_thr, use_container_width=True)
-    st.info(f"✅ Threshold ótimo encontrado automaticamente: **{thr:.2f}** (maximiza F1-Score no conjunto de teste)")
-
-    # ── WALK-FORWARD ───────────────────────────────────────────────────────────
-    if r['wf_resultados'] is not None:
-        st.markdown("---")
-        st.markdown('<div class="section-header">🔄 WALK-FORWARD VALIDATION (OUT-OF-SAMPLE)</div>', unsafe_allow_html=True)
-        fig_wf = plot_walk_forward(r['wf_resultados'])
-        if fig_wf:
-            st.plotly_chart(fig_wf, use_container_width=True)
-        df_wf = r['wf_resultados']['df_wf']
-        wf_cols = st.columns(4)
-        with wf_cols[0]:
-            st.markdown(f"""
-            <div class="metric-card blue">
-                <div class="metric-label">ROC-AUC Médio (OOS)</div>
-                <div class="metric-value neu">{df_wf['ROC-AUC'].mean():.4f}</div>
-                <div class="metric-sub">± {df_wf['ROC-AUC'].std():.4f}</div>
-            </div>""", unsafe_allow_html=True)
-        with wf_cols[1]:
-            st.markdown(f"""
-            <div class="metric-card green">
-                <div class="metric-label">Accuracy Médio (OOS)</div>
-                <div class="metric-value neu">{df_wf['Accuracy'].mean():.4f}</div>
-                <div class="metric-sub">± {df_wf['Accuracy'].std():.4f}</div>
-            </div>""", unsafe_allow_html=True)
-        with wf_cols[2]:
-            r_med = df_wf['Retorno'].mean()
-            rc = 'pos' if r_med > 0 else 'neg'
-            st.markdown(f"""
-            <div class="metric-card {'green' if r_med>0 else 'red'}">
-                <div class="metric-label">Retorno Médio (OOS)</div>
-                <div class="metric-value {rc}">{r_med:+.2%}</div>
-                <div class="metric-sub">± {df_wf['Retorno'].std():.2%}</div>
-            </div>""", unsafe_allow_html=True)
-        with wf_cols[3]:
-            ret_wf_total = float((1 + r['wf_resultados']['retornos_todos']).prod() - 1)
-            rc2 = 'pos' if ret_wf_total > 0 else 'neg'
-            st.markdown(f"""
-            <div class="metric-card purple">
-                <div class="metric-label">Retorno Total (OOS)</div>
-                <div class="metric-value {rc2}">{ret_wf_total:+.2%}</div>
-                <div class="metric-sub">Todos os folds</div>
-            </div>""", unsafe_allow_html=True)
-        st.dataframe(df_wf.style.format({
-            'Accuracy': '{:.4f}', 'ROC-AUC': '{:.4f}',
-            'F1': '{:.4f}', 'Retorno': '{:.2%}'}),
-            use_container_width=True)
-
-    # ── FEATURE IMPORTANCE ─────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">🔍 FEATURE IMPORTANCE (MUTUAL INFORMATION)</div>', unsafe_allow_html=True)
-    st.plotly_chart(plot_feature_importance(r['mi_ranking']), use_container_width=True)
-
-    # ── DADOS BRUTOS ───────────────────────────────────────────────────────────
-    with st.expander("📂 Dados Brutos (últimas 100 linhas)"):
-        cols_show = ['Open', 'High', 'Low', 'Close', 'Volume',
-                     'rsi_14', 'macd', 'atr_14', 'vol_20', 'adx_14', 'target']
-        cols_exist = [c for c in cols_show if c in r['df'].columns]
-        st.dataframe(r['df'][cols_exist].tail(100).round(4), use_container_width=True)
-
-    # ── LOGS DO PIPELINE ───────────────────────────────────────────────────────
-    with st.expander("🔧 Logs do Pipeline"):
-        for log_line in r['logs']:
-            st.markdown(f"<div style='font-family:JetBrains Mono;font-size:11px;color:#64748b;'>{log_line}</div>",
-                        unsafe_allow_html=True)
-
-    # ── FOOTER ─────────────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown(f"""
-    <div style="text-align:center; font-family: JetBrains Mono, monospace; font-size: 11px; color: #1e2535; padding: 20px 0;">
-        QUANT ML TRADING SYSTEM v4.0 &nbsp;·&nbsp; {ticker_display} &nbsp;·&nbsp;
-        Modelo: {melhor_nome} &nbsp;·&nbsp; ROC-AUC: {avaliacao['roc']:.4f} &nbsp;·&nbsp;
-        Threshold: {thr:.2f} &nbsp;·&nbsp;
-        ⚠️ Apenas para fins educacionais. Não constitui recomendação financeira.
-    </div>
-    """, unsafe_allow_html=True)
-
-else:
-    # ── TELA INICIAL ───────────────────────────────────────────────────────────
+if not executar and 'resultado' not in st.session_state:
     st.markdown("""
-    <div style="text-align:center; padding: 80px 20px;">
-        <div style="font-family: 'Syne', sans-serif; font-size: 48px; font-weight: 800;
-                    background: linear-gradient(135deg, #1e2535 0%, #2a3550 50%, #1e2535 100%);
-                    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-                    margin-bottom: 20px;">
-            ⚡
-        </div>
-        <div style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: #2a3550;
-                    letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 40px;">
-            Configure os parâmetros na barra lateral e clique em<br>
-            <span style="color: #3b82f6; font-weight: 700;">EXECUTAR BACKTEST</span> para iniciar o pipeline
-        </div>
+    <div class='warning-box'>
+    ⚙️ Configure os parâmetros na barra lateral e clique em <strong>🚀 Executar Backtest</strong> para iniciar o pipeline de ML.
     </div>
     """, unsafe_allow_html=True)
 
-    # Cards informativos
-    ic1, ic2, ic3, ic4 = st.columns(4)
-    with ic1:
-        st.markdown("""
-        <div class="metric-card blue">
-            <div class="metric-label">Feature Engineering</div>
-            <div class="metric-value neu" style="font-size:20px;">100+</div>
-            <div class="metric-sub">Indicadores técnicos automáticos: SMA, EMA, RSI, MACD, ATR, Bollinger, VWAP, ADX e muito mais</div>
+    # Preview dos parâmetros configurados
+    st.markdown("<div class='section-header'>📋 Parâmetros Configurados</div>", unsafe_allow_html=True)
+
+    cols_prev = st.columns(4)
+    params_preview = {
+        "Ativo": TICKER,
+        "Histórico": f"{ANOS_HISTORICO} anos",
+        "Timeframe": TIMEFRAME,
+        "Capital": f"${CAPITAL_INICIAL:,.0f}",
+        "Stop Loss": f"{STOP_LOSS_PCT:.1%}",
+        "Take Profit": f"{TAKE_PROFIT_PCT:.1%}",
+        "Threshold": f"{PROB_THRESHOLD:.0%}",
+        "Risco/Trade": f"{RISCO_POR_TRADE:.1%}",
+        "Treino/Val/Teste": f"{TRAIN_RATIO:.0%}/{VAL_RATIO:.0%}/{TEST_RATIO:.0%}",
+        "Spread": f"{SPREAD_PIPS:.4f}",
+        "Slippage": f"{SLIPPAGE:.4f}",
+        "Max Features": MAX_FEATURES,
+    }
+    keys = list(params_preview.keys())
+    for i, col in enumerate(cols_prev):
+        for j in range(3):
+            idx = i * 3 + j
+            if idx < len(keys):
+                col.markdown(f"""
+                <div class='metric-card'>
+                    <div class='metric-label'>{keys[idx]}</div>
+                    <div class='metric-value' style='font-size:1.1rem;'>{params_preview[keys[idx]]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+    st.stop()
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+if executar or 'resultado' not in st.session_state:
+
+    progress_container = st.container()
+    with progress_container:
+        bar = st.progress(0, text="🔄 Iniciando pipeline...")
+
+        try:
+            # Passo 1: Download
+            bar.progress(5, text=f"📥 Baixando dados de {TICKER}...")
+            df_raw = baixar_dados(TICKER, ANOS_HISTORICO, TIMEFRAME)
+            if df_raw is None or len(df_raw) < 200:
+                st.error(f"❌ Dados insuficientes para {TICKER}. Verifique o ticker e tente novamente.")
+                st.stop()
+
+            # Passo 2: Features
+            bar.progress(15, text="⚙️ Calculando indicadores técnicos e features...")
+            df = construir_features(df_raw)
+            df_raw_close = df_raw['Close'].copy()
+
+            # Passo 3: Seleção de features
+            bar.progress(30, text="🔍 Selecionando melhores features por Mutual Information...")
+            features_sel = selecionar_features(df, max_features=MAX_FEATURES)
+            if len(features_sel) == 0:
+                st.error("❌ Nenhuma feature válida encontrada. Tente aumentar o período histórico.")
+                st.stop()
+
+            # Passo 4: Preparar dataset
+            bar.progress(40, text="📐 Preparando dataset...")
+            colunas_need = features_sel + ['target', 'Close', 'retorno_futuro_pct', 'retorno_atual']
+            colunas_exist = [c for c in colunas_need if c in df.columns]
+            df_modelo = df[colunas_exist].dropna()
+
+            X = df_modelo[features_sel].values
+            y = df_modelo['target'].values
+            datas   = df_modelo.index
+            closes  = df_modelo['Close'].values
+            retornos = df_modelo['retorno_futuro_pct'].values if 'retorno_futuro_pct' in df_modelo.columns else np.zeros(len(df_modelo))
+
+            # Passo 5: Split temporal
+            n = len(X)
+            n_train = int(n * TRAIN_RATIO)
+            n_val   = int(n * VAL_RATIO)
+
+            X_train, y_train = X[:n_train], y[:n_train]
+            X_val,   y_val   = X[n_train:n_train+n_val], y[n_train:n_train+n_val]
+            X_test,  y_test  = X[n_train+n_val:], y[n_train+n_val:]
+            ret_test   = retornos[n_train+n_val:]
+            closes_test = closes[n_train+n_val:]
+            datas_test  = datas[n_train+n_val:]
+
+            # Normalização
+            scaler = RobustScaler()
+            X_train_s = scaler.fit_transform(X_train)
+            X_val_s   = scaler.transform(X_val)
+            X_test_s  = scaler.transform(X_test)
+            X_all_s   = scaler.transform(X)
+
+            # Passo 6: Treinar modelos
+            bar.progress(55, text="🧠 Treinando modelos de ML...")
+            df_res, modelos_treinados = treinar_modelos(
+                X_train_s, y_train, X_val_s, y_val, X_test_s, y_test)
+
+            # Passo 7: Melhor modelo
+            melhor_nome = df_res.iloc[0]['Modelo']
+            melhor_modelo = modelos_treinados[melhor_nome]['modelo']
+            y_pred_test = modelos_treinados[melhor_nome]['y_pred_test']
+            y_prob_test = modelos_treinados[melhor_nome]['y_prob_test']
+
+            # Passo 8: Backtest realista
+            bar.progress(70, text="📈 Executando backtest realista...")
+            bt = backtest_realista(
+                y_pred_test, y_prob_test, closes_test, ret_test, datas_test,
+                CAPITAL_INICIAL, PROB_THRESHOLD, RISCO_POR_TRADE,
+                STOP_LOSS_PCT, TAKE_PROFIT_PCT,
+                SPREAD_PIPS, SLIPPAGE, CUSTO_OPERACIONAL
+            )
+
+            # Passo 9: Métricas financeiras
+            sinais = np.where(y_pred_test == 1, 1, -1)
+            rets_mod = pd.Series(sinais * ret_test / 100)
+            rets_bh  = pd.Series(ret_test / 100)
+            metricas_fin = calcular_metricas_financeiras(rets_mod, rets_bh, CAPITAL_INICIAL)
+
+            # Passo 10: Previsão próximo dia
+            bar.progress(88, text="🔮 Gerando previsão para o próximo dia...")
+            X_prod = X_all_s[-1:].copy()
+            prob_alta  = melhor_modelo.predict_proba(X_prod)[0, 1]
+            prob_queda = 1 - prob_alta
+            if prob_alta >= PROB_THRESHOLD:
+                sinal_hoje, sinal_code = "COMPRA 🟢", "BUY"
+                confianca = prob_alta
+            elif prob_queda >= PROB_THRESHOLD:
+                sinal_hoje, sinal_code = "VENDA 🔴", "SELL"
+                confianca = prob_queda
+            else:
+                sinal_hoje, sinal_code = "NEUTRO ⚪", "NEUTRAL"
+                confianca = max(prob_alta, prob_queda)
+
+            preco_atual   = closes[-1]
+            rsi_atual     = df_modelo['rsi_14'].iloc[-1] if 'rsi_14' in df_modelo.columns else 0
+            vol_20        = df_modelo['vol_20'].iloc[-1] if 'vol_20' in df_modelo.columns else 0
+            data_ref      = datas[-1].date()
+            ret_hoje      = df_modelo['retorno_atual'].iloc[-1] * 100 if 'retorno_atual' in df_modelo.columns else 0
+
+            bar.progress(100, text="✅ Pipeline concluído!")
+            time.sleep(0.4)
+            bar.empty()
+
+            # Salvar resultado na sessão
+            st.session_state['resultado'] = {
+                'df_res': df_res, 'melhor_nome': melhor_nome,
+                'bt': bt, 'metricas_fin': metricas_fin,
+                'y_pred_test': y_pred_test, 'y_prob_test': y_prob_test,
+                'y_test': y_test, 'datas_test': datas_test,
+                'ret_test': ret_test, 'closes_test': closes_test,
+                'closes': closes, 'retornos': retornos, 'datas': datas,
+                'df_modelo': df_modelo, 'features_sel': features_sel,
+                'prob_alta': prob_alta, 'prob_queda': prob_queda,
+                'sinal_hoje': sinal_hoje, 'sinal_code': sinal_code,
+                'confianca': confianca, 'preco_atual': preco_atual,
+                'rsi_atual': rsi_atual, 'vol_20': vol_20,
+                'data_ref': data_ref, 'ret_hoje': ret_hoje,
+                'n_features': len(features_sel),
+                'n_amostras': n, 'periodo_inicio': datas[0].date(),
+                'periodo_fim': datas[-1].date(),
+                'ticker': TICKER,
+            }
+
+        except Exception as e:
+            bar.empty()
+            st.error(f"❌ Erro no pipeline: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+            st.stop()
+
+# ==============================================================================
+# EXIBIÇÃO DOS RESULTADOS
+# ==============================================================================
+
+res = st.session_state['resultado']
+bt  = res['bt']
+mf  = res['metricas_fin']
+
+# ── SINAL DE PREVISÃO ─────────────────────────────────────────────────────────
+st.markdown("<div class='section-header'>🔮 Sinal para o Próximo Dia</div>",
+            unsafe_allow_html=True)
+
+col_sig, col_info1, col_info2, col_info3, col_info4 = st.columns([2, 1, 1, 1, 1])
+
+with col_sig:
+    css_class = {'BUY': 'signal-buy', 'SELL': 'signal-sell', 'NEUTRAL': 'signal-neutral'}[res['sinal_code']]
+    color = {'BUY': '#3fb950', 'SELL': '#f85149', 'NEUTRAL': '#8b949e'}[res['sinal_code']]
+    st.markdown(f"""
+    <div class='{css_class}'>
+        <div class='signal-text' style='color:{color};'>{res['sinal_hoje']}</div>
+        <div class='signal-prob'>Confiança: <strong>{res['confianca']:.1%}</strong> · Threshold: {PROB_THRESHOLD:.0%}</div>
+        <div class='signal-prob'>Ref: {res['data_ref']} · {res['ticker']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col_info1:
+    st.markdown(f"""<div class='metric-card'>
+    <div class='metric-label'>Preço Atual</div>
+    <div class='metric-value' style='font-size:1.2rem;'>{res['preco_atual']:.4f}</div>
+    <div class='metric-delta {"delta-pos" if res["ret_hoje"] >= 0 else "delta-neg"}'>{res["ret_hoje"]:+.3f}% hoje</div>
+    </div>""", unsafe_allow_html=True)
+
+with col_info2:
+    st.markdown(f"""<div class='metric-card'>
+    <div class='metric-label'>Prob. Alta ↑</div>
+    <div class='metric-value' style='font-size:1.2rem; color:#3fb950;'>{res['prob_alta']:.1%}</div>
+    <div class='metric-delta delta-neu'>RSI(14): {res['rsi_atual']:.1f}</div>
+    </div>""", unsafe_allow_html=True)
+
+with col_info3:
+    st.markdown(f"""<div class='metric-card'>
+    <div class='metric-label'>Prob. Queda ↓</div>
+    <div class='metric-value' style='font-size:1.2rem; color:#f85149;'>{res['prob_queda']:.1%}</div>
+    <div class='metric-delta delta-neu'>Vol(20): {res['vol_20']:.4f}</div>
+    </div>""", unsafe_allow_html=True)
+
+with col_info4:
+    st.markdown(f"""<div class='metric-card'>
+    <div class='metric-label'>Melhor Modelo</div>
+    <div class='metric-value' style='font-size:1.1rem;'>{res['melhor_nome']}</div>
+    <div class='metric-delta delta-neu'>{res['n_features']} features</div>
+    </div>""", unsafe_allow_html=True)
+
+# ── MÉTRICAS DO BACKTEST ──────────────────────────────────────────────────────
+st.markdown("<div class='section-header'>📊 Métricas do Backtest</div>",
+            unsafe_allow_html=True)
+
+cols_m = st.columns(4)
+metricas_display = [
+    ("Retorno Acumulado", f"{bt['ret_total']:.2%}",
+     f"B&H: {mf['Retorno B&H']:.2%}", bt['ret_total'] >= 0),
+    ("Sharpe Ratio", f"{bt['sharpe']:.3f}",
+     f"Sortino: {mf['Sortino Ratio']:.3f}", bt['sharpe'] >= 1.0),
+    ("Win Rate", f"{bt['win_rate']:.1%}",
+     f"{bt['n_trades']:,} trades", bt['win_rate'] >= 0.5),
+    ("Max Drawdown", f"{bt['max_dd']:.2%}",
+     f"Profit Factor: {bt['profit_factor']:.2f}", bt['max_dd'] > -0.20),
+]
+
+for col, (label, valor, sub, positivo) in zip(cols_m, metricas_display):
+    cor = "delta-pos" if positivo else "delta-neg"
+    with col:
+        st.markdown(f"""<div class='metric-card'>
+        <div class='metric-label'>{label}</div>
+        <div class='metric-value'>{valor}</div>
+        <div class='metric-delta {cor}'>{sub}</div>
         </div>""", unsafe_allow_html=True)
-    with ic2:
-        st.markdown("""
-        <div class="metric-card green">
-            <div class="metric-label">Modelos Treinados</div>
-            <div class="metric-value neu" style="font-size:20px;">6</div>
-            <div class="metric-sub">LogReg, DecTree, RandomForest, XGBoost, LightGBM, CatBoost — seleção automática pelo melhor ROC-AUC</div>
+
+cols_m2 = st.columns(4)
+metricas_display2 = [
+    ("Capital Final", f"${bt['capital_final']:,.0f}",
+     f"Inicial: ${CAPITAL_INICIAL:,.0f}", bt['capital_final'] >= CAPITAL_INICIAL),
+    ("Payoff (Ganho/Perda)", f"{mf['Payoff']:.3f}",
+     "Gain médio / Loss médio", mf['Payoff'] >= 1.0),
+    ("ROC-AUC (Teste)", f"{res['df_res'].iloc[0]['ROC_Test']:.4f}",
+     f"Acc: {res['df_res'].iloc[0]['Acc_Test']:.4f}", res['df_res'].iloc[0]['ROC_Test'] >= 0.55),
+    ("F1-Score (Teste)", f"{res['df_res'].iloc[0]['F1_Test']:.4f}",
+     f"Prec: {res['df_res'].iloc[0]['Prec_Test']:.4f}", res['df_res'].iloc[0]['F1_Test'] >= 0.50),
+]
+
+for col, (label, valor, sub, positivo) in zip(cols_m2, metricas_display2):
+    cor = "delta-pos" if positivo else "delta-neg"
+    with col:
+        st.markdown(f"""<div class='metric-card'>
+        <div class='metric-label'>{label}</div>
+        <div class='metric-value'>{valor}</div>
+        <div class='metric-delta {cor}'>{sub}</div>
         </div>""", unsafe_allow_html=True)
-    with ic3:
-        st.markdown("""
-        <div class="metric-card yellow">
-            <div class="metric-label">Backtest Realista</div>
-            <div class="metric-value neu" style="font-size:20px;">✓</div>
-            <div class="metric-sub">Spread, slippage, Stop-Loss, Take-Profit, position sizing por risco e threshold de probabilidade</div>
-        </div>""", unsafe_allow_html=True)
-    with ic4:
-        st.markdown("""
-        <div class="metric-card purple">
-            <div class="metric-label">Walk-Forward (OOS)</div>
-            <div class="metric-value neu" style="font-size:20px;">5</div>
-            <div class="metric-sub">Validação out-of-sample com expanding window — elimina data leakage e mede performance real</div>
-        </div>""", unsafe_allow_html=True)
+
+# ── GRÁFICOS ──────────────────────────────────────────────────────────────────
+st.markdown("<div class='section-header'>📈 Equity Curve & Drawdown</div>",
+            unsafe_allow_html=True)
+
+fig_equity = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.7, 0.3], vertical_spacing=0.05)
+
+datas_test = res['datas_test']
+eq = bt['equity_curve']
+eq_bh = mf['equity_bh']
+dd = bt['drawdown']
+
+n_pts = min(len(datas_test), len(eq))
+dates_plot = list(datas_test[:n_pts])
+
+fig_equity.add_trace(go.Scatter(
+    x=dates_plot, y=eq.values[:n_pts],
+    name='Modelo ML', line=dict(color='#58a6ff', width=2),
+    fill='tozeroy', fillcolor='rgba(88,166,255,0.05)'
+), row=1, col=1)
+fig_equity.add_trace(go.Scatter(
+    x=dates_plot, y=eq_bh.values[:n_pts],
+    name='Buy & Hold', line=dict(color='#d29922', width=1.5, dash='dash')
+), row=1, col=1)
+fig_equity.add_hline(y=CAPITAL_INICIAL, line_dash='dot', line_color='#30363d', row=1, col=1)
+
+fig_equity.add_trace(go.Scatter(
+    x=dates_plot, y=dd.values[:n_pts] * 100,
+    name='Drawdown', fill='tozeroy', fillcolor='rgba(248,81,73,0.25)',
+    line=dict(color='#f85149', width=1)
+), row=2, col=1)
+
+fig_equity.update_layout(
+    paper_bgcolor='#0b0e14', plot_bgcolor='#0d1117',
+    font=dict(color='#c9d1d9', family='JetBrains Mono'),
+    legend=dict(bgcolor='#161b22', bordercolor='#21262d', borderwidth=1),
+    height=450, margin=dict(l=10, r=10, t=10, b=10),
+    hovermode='x unified',
+)
+fig_equity.update_xaxes(gridcolor='#21262d', zeroline=False)
+fig_equity.update_yaxes(gridcolor='#21262d', zeroline=False)
+fig_equity.update_yaxes(title_text='Capital (USD)', row=1, col=1,
+                         tickformat='$,.0f')
+fig_equity.update_yaxes(title_text='Drawdown (%)', row=2, col=1)
+st.plotly_chart(fig_equity, use_container_width=True)
+
+# ── DISTRIBUIÇÃO DAS PROBABILIDADES ──────────────────────────────────────────
+col_dist, col_conf = st.columns(2)
+
+with col_dist:
+    st.markdown("<div class='section-header'>📉 Distribuição das Probabilidades</div>",
+                unsafe_allow_html=True)
+    fig_prob = go.Figure()
+    fig_prob.add_trace(go.Histogram(
+        x=res['y_prob_test'], nbinsx=50, name='Prob. de Alta',
+        marker_color='#58a6ff', opacity=0.75
+    ))
+    fig_prob.add_vline(x=PROB_THRESHOLD, line_color='#3fb950',
+                       line_dash='dash', annotation_text=f'Threshold {PROB_THRESHOLD:.0%}')
+    fig_prob.add_vline(x=1-PROB_THRESHOLD, line_color='#f85149',
+                       line_dash='dash', annotation_text=f'{1-PROB_THRESHOLD:.0%}')
+    fig_prob.update_layout(
+        paper_bgcolor='#0b0e14', plot_bgcolor='#0d1117',
+        font=dict(color='#c9d1d9', family='JetBrains Mono'),
+        height=300, margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+        xaxis=dict(gridcolor='#21262d', title='Probabilidade'),
+        yaxis=dict(gridcolor='#21262d', title='Frequência'),
+    )
+    st.plotly_chart(fig_prob, use_container_width=True)
+
+with col_conf:
+    st.markdown("<div class='section-header'>🔥 Confusion Matrix</div>",
+                unsafe_allow_html=True)
+    cm = confusion_matrix(res['y_test'], res['y_pred_test'])
+    fig_cm = go.Figure(go.Heatmap(
+        z=cm, x=['Pred Queda', 'Pred Alta'], y=['Real Queda', 'Real Alta'],
+        colorscale=[[0, '#0d1117'], [1, '#1f6feb']],
+        text=cm, texttemplate='%{text}',
+        textfont=dict(size=16, color='white')
+    ))
+    fig_cm.update_layout(
+        paper_bgcolor='#0b0e14', plot_bgcolor='#0d1117',
+        font=dict(color='#c9d1d9', family='JetBrains Mono'),
+        height=300, margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_cm, use_container_width=True)
+
+# ── RANKING DE MODELOS ────────────────────────────────────────────────────────
+st.markdown("<div class='section-header'>🏆 Ranking de Modelos</div>",
+            unsafe_allow_html=True)
+
+df_res_disp = res['df_res'].copy()
+df_res_disp.index = range(1, len(df_res_disp)+1)
+for col_pct in ['ROC_Test','Acc_Test','F1_Test','Prec_Test','Rec_Test']:
+    df_res_disp[col_pct] = df_res_disp[col_pct].map('{:.4f}'.format)
+
+st.dataframe(
+    df_res_disp[['Modelo','ROC_Test','Acc_Test','F1_Test','Prec_Test','Rec_Test']].rename(columns={
+        'ROC_Test': 'ROC-AUC', 'Acc_Test': 'Accuracy',
+        'F1_Test': 'F1-Score', 'Prec_Test': 'Precision', 'Rec_Test': 'Recall'
+    }),
+    use_container_width=True, hide_index=False,
+)
+
+# ── HISTÓRICO DE TRADES ───────────────────────────────────────────────────────
+if bt['n_trades'] > 0:
+    st.markdown("<div class='section-header'>📋 Histórico de Trades</div>",
+                unsafe_allow_html=True)
+    df_trades = bt['df_trades'].copy()
+    df_trades['sinal_str'] = df_trades['sinal'].map({1: '🟢 Compra', -1: '🔴 Venda'})
+    df_trades['prob'] = df_trades['prob'].map('{:.3f}'.format)
+    df_trades['preco'] = df_trades['preco'].map('{:.4f}'.format)
+    df_trades['retorno_real'] = df_trades['retorno_real'].map('{:.4f}'.format)
+    df_trades['pnl'] = df_trades['pnl'].map('${:,.2f}'.format)
+    df_trades['capital'] = df_trades['capital'].map('${:,.2f}'.format)
+
+    st.dataframe(
+        df_trades[['data','sinal_str','prob','preco','retorno_real','pnl','capital']].rename(columns={
+            'data':'Data','sinal_str':'Sinal','prob':'Prob.','preco':'Preço',
+            'retorno_real':'Ret. Real','pnl':'P&L','capital':'Capital'
+        }).tail(200),
+        use_container_width=True, height=300,
+    )
+else:
+    st.markdown("""
+    <div class='warning-box'>
+    ⚠️ Nenhum trade gerado com o threshold atual. Considere reduzir o valor de <strong>Prob. mínima para operar</strong> na sidebar.
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── SUMÁRIO DOS PARÂMETROS USADOS ─────────────────────────────────────────────
+with st.expander("📋 Parâmetros usados neste backtest"):
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        st.markdown("**Ativo & Dados**")
+        st.write(f"- Ticker: `{TICKER}`")
+        st.write(f"- Histórico: `{ANOS_HISTORICO} anos`")
+        st.write(f"- Timeframe: `{TIMEFRAME}`")
+        st.write(f"- Split Treino/Val/Teste: `{TRAIN_RATIO:.0%}/{VAL_RATIO:.0%}/{TEST_RATIO:.0%}`")
+        st.write(f"- Max Features: `{MAX_FEATURES}`")
+        st.write(f"- Correlação máx.: `{CORRELACAO_MAX}`")
+    with col_p2:
+        st.markdown("**Gestão de Risco**")
+        st.write(f"- Capital inicial: `${CAPITAL_INICIAL:,.0f}`")
+        st.write(f"- Risco por trade: `{RISCO_POR_TRADE:.2%}`")
+        st.write(f"- Stop Loss: `{STOP_LOSS_PCT:.2%}`")
+        st.write(f"- Take Profit: `{TAKE_PROFIT_PCT:.2%}`")
+        st.write(f"- R/R Ratio: `1:{RR_RATIO:.1f}`")
+        st.write(f"- Threshold: `{PROB_THRESHOLD:.2f}`")
+    with col_p3:
+        st.markdown("**Custos & Indicadores**")
+        st.write(f"- Spread: `{SPREAD_PIPS:.4f}`")
+        st.write(f"- Slippage: `{SLIPPAGE:.4f}`")
+        st.write(f"- Custo operacional: `{CUSTO_OPERACIONAL:.4f}`")
+        st.write(f"- ADX limiar tendência: `{ADX_TENDENCIA_THRESH}`")
+        st.write(f"- Regime vol. mult.: `{REGIME_VOL_THRESH}`")
+        st.write(f"- RSI sobrecomprado: `{RSI_SOBRECOMPRADO}` / sobrevendido: `{RSI_SOBREVENDIDO}`")
+
+# ── DISCLAIMER ────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("""
+<div class='warning-box' style='text-align:center;'>
+⚠️ <strong>DISCLAIMER:</strong> Este dashboard é exclusivamente para fins educacionais e de pesquisa quantitativa. 
+Resultados passados não garantem resultados futuros. NÃO constitui recomendação de investimento. 
+Consulte sempre um profissional certificado antes de tomar decisões financeiras.
+</div>
+""", unsafe_allow_html=True)
