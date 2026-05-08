@@ -259,7 +259,21 @@ def processar_estrategia(df: pd.DataFrame, thresh: float = 0.55):
     Retorna métricas, df com sinais e equity curve.
     """
     df = engenharia_de_features(df)
-    df = df.iloc[:-1].dropna()  # Remove última linha (target inválido) e NaNs
+    df = df.iloc[:-1]  # Remove última linha (target inválido)
+
+    # Remove apenas colunas com >60% de NaN antes de dropar linhas
+    thresh_nan = 0.6
+    df = df.loc[:, df.isnull().mean() < thresh_nan]
+
+    # Drop linhas com NaN restantes
+    df = df.dropna()
+
+    MIN_AMOSTRAS = 120  # mínimo para splits terem sentido
+    if len(df) < MIN_AMOSTRAS:
+        raise ValueError(
+            f"Dados insuficientes após feature engineering: apenas {len(df)} linhas. "
+            f"Aumente o período histórico (mínimo recomendado: 3 anos) ou troque o ativo."
+        )
 
     feature_cols = [c for c in df.columns if c not in
                     ['Open','High','Low','Close','Volume',
@@ -272,6 +286,14 @@ def processar_estrategia(df: pd.DataFrame, thresh: float = 0.55):
     # Split temporal 70/15/15
     n = len(df)
     t1, t2 = int(n * 0.70), int(n * 0.85)
+
+    # Garante tamanho mínimo em cada split
+    MIN_SPLIT = 20
+    if t1 < MIN_SPLIT or (t2 - t1) < MIN_SPLIT or (n - t2) < MIN_SPLIT:
+        raise ValueError(
+            f"Splits muito pequenos (treino={t1}, val={t2-t1}, teste={n-t2}). "
+            f"Aumente o período histórico."
+        )
 
     X_tr, y_tr = X[:t1], y[:t1]
     X_val, y_val = X[t1:t2], y[t1:t2]
