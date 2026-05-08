@@ -1,10 +1,36 @@
+# QuantTrading ML Dashboard — Requirements
+# Gerado para Python 3.10+
+
+# Core
 streamlit>=1.35.0
-yfinance>=0.2.40
 pandas>=2.0.0
-numpy>=1.26.0
+numpy>=1.24.0
+
+# Dados Financeiros
+yfinance>=0.2.40
+
+# Visualização
 plotly>=5.20.0
+
+# Machine Learning
 scikit-learn>=1.4.0
 xgboost>=2.0.0
 lightgbm>=4.3.0
+catboost>=1.2.0
+
+# Indicadores Técnicos
+ta>=0.11.0
+
+# Estatística
 scipy>=1.12.0
-streamlit-autorefresh>=1.0.1
+statsmodels>=0.14.0
+
+# Otimização (opcional mas recomendado)
+optuna>=3.6.0
+
+# SHAP (opcional)
+shap>=0.45.0
+
+# Utilitários
+python-dateutil>=2.9.0
+requests>=2.31.0
