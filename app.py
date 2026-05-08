@@ -559,3 +559,420 @@ def processar_estrategia(df_raw: pd.DataFrame,
             continue
         sc_wf   = RobustScaler()
         Xw_tr   = sc_wf.fit_transform(X[tr_idx])
+        Xw_te   = sc_wf.transform(X[te_idx])
+        mod_wf  = (XGBClassifier(n_estimators=200, max_depth=4,
+                                  learning_rate=0.05, eval_metric='logloss',
+                                  random_state=42, n_jobs=-1, verbosity=0)
+                   if XGB_OK else
+                   RandomForestClassifier(n_estimators=100, max_depth=5,
+                                          random_state=42, n_jobs=-1))
+        mod_wf.fit(Xw_tr, y[tr_idx])
+        yp_wf  = mod_wf.predict(Xw_te)
+        ypr_wf = mod_wf.predict_proba(Xw_te)[:,1]
+        s_wf   = np.where(ypr_wf >= thresh, 1, np.where(ypr_wf <= 1-thresh, -1, 0))
+        r_wf   = (s_wf * ret_fut[te_idx])
+        wf_rows.append({
+            'Fold':    fold,
+            'Período': f"{dates[te_idx[0]].date()} → {dates[te_idx[-1]].date()}",
+            'N_Treino':len(tr_idx), 'N_Teste':len(te_idx),
+            'Acc':     accuracy_score(y[te_idx], yp_wf),
+            'ROC':     roc_auc_score(y[te_idx], ypr_wf) if len(np.unique(y[te_idx]))>1 else 0.5,
+            'F1':      f1_score(y[te_idx], yp_wf, zero_division=0),
+            'Retorno': float((1+r_wf).prod()-1),
+        })
+        wf_rets.extend(r_wf.tolist())
+
+    df_wf = pd.DataFrame(wf_rows)
+
+    # ── Passo 20 — Previsão próximo dia ──────────────────────────────────────
+    df_prod  = engenharia_de_features(df_raw)
+    df_prod  = df_prod.loc[:, df_prod.columns.isin(feature_cols + COLS_NAO_FEATURE)]
+    for fc in feature_cols:
+        if fc not in df_prod.columns:
+            df_prod[fc] = 0.0
+    ultima = df_prod[feature_cols].iloc[-1:].fillna(0)
+    X_prod = scaler.transform(ultima.values)
+    prob_alta  = float(model.predict_proba(X_prod)[0, 1])
+    prob_queda = 1 - prob_alta
+    if prob_alta >= thresh:        sinal_prod = "COMPRA 🟢"
+    elif prob_queda >= thresh:     sinal_prod = "VENDA 🔴"
+    else:                          sinal_prod = "NEUTRO ⚪"
+
+    # ── Equity para plot ──────────────────────────────────────────────────────
+    min_len = min(len(dates_te), len(equity))
+    eq_df   = pd.DataFrame({'date': dates_te[:min_len], 'equity': equity[:min_len]})
+
+    df_out  = df.iloc[t2:].copy()
+    df_out['proba'] = proba_te
+    df_out['sinal'] = pred_te
+
+    return {
+        # Métricas classificação
+        'acc':acc, 'prec':prec, 'rec':rec, 'f1':f1, 'roc':roc,
+        'fpr':fpr, 'tpr':tpr, 'cm':cm,
+        # Métricas financeiras
+        'ret_acum':ret_acum, 'max_dd':max_dd, 'sharpe':sharpe,
+        'sortino':sortino, 'win_rate':win_rate, 'n_trades':n_trades,
+        'capital_final': cap_bt,
+        # Dados para plots
+        'equity':equity, 'eq_df':eq_df, 'dd_arr':dd_arr,
+        'df_out':df_out, 'df_raw':df_raw,
+        'features':feature_cols, 'mi_rank':mi_rank,
+        # Modelos
+        'df_modelos':df_modelos,
+        # Análises extras
+        'df_thr':df_thr,
+        'df_ov':df_ov, 'gap_roc':gap_roc, 'ov_data':ov_data,
+        'df_wf':df_wf,
+        # Produção
+        'prob_alta':prob_alta, 'prob_queda':prob_queda, 'sinal_prod':sinal_prod,
+        'preco_atual': float(df_raw['Close'].iloc[-1]),
+        'data_ref':    str(df_raw.index[-1].date()),
+        'n_train':t1, 'n_val':t2-t1, 'n_test':n-t2,
+    }
+
+# ==============================================================================
+# EXECUÇÃO
+# ==============================================================================
+if run_btn or 'results' not in st.session_state:
+    with st.spinner(f"⏳ Baixando `{TICKER}` e treinando modelos..."):
+        try:
+            df_raw = baixar_dados(TICKER.upper(), ANOS, TIMEFRAME)
+            if len(df_raw) < 300:
+                st.error("⚠️ Dados insuficientes (< 300 candles). Aumente o período ou troque o ativo.")
+                st.stop()
+            results = processar_estrategia(
+                df_raw, thresh=THRESH, capital=CAPITAL,
+                stop_pct=STOP_PCT, tp_pct=TP_PCT,
+                spread=SPREAD, slippage=SLIPPAGE, risco_trade=RISCO_TRADE
+            )
+            st.session_state['results'] = results
+            st.session_state['ticker']  = TICKER.upper()
+        except Exception as e:
+            st.error(f"Erro: {e}")
+            st.stop()
+
+results = st.session_state.get('results')
+if not results:
+    st.info("Configure os parâmetros na barra lateral e clique em **🚀 Executar Backtest**.")
+    st.stop()
+
+r = results
+
+# ==============================================================================
+# CARDS DE MÉTRICAS
+# ==============================================================================
+st.markdown("## 📈 Resultados do Backtest")
+
+def card(col, label, value, css_class, sub=""):
+    col.markdown(f"""
+    <div class="metric-card">
+        <div class="label">{label}</div>
+        <div class="value {css_class}">{value}</div>
+        <div class="sub">{sub}</div>
+    </div>""", unsafe_allow_html=True)
+
+c1,c2,c3,c4 = st.columns(4)
+card(c1,"Retorno Acumulado", f"{r['ret_acum']:+.2f}%",
+     "green" if r['ret_acum']>=0 else "red", f"{r['n_trades']} trades")
+card(c2,"Sharpe Ratio",      f"{r['sharpe']:.2f}",
+     "green" if r['sharpe']>=1 else ("blue" if r['sharpe']>=0 else "red"), "Anualizado")
+card(c3,"Win Rate",          f"{r['win_rate']:.1f}%",
+     "green" if r['win_rate']>=50 else "red", f"Acurácia: {r['acc']:.1%}")
+card(c4,"Max Drawdown",      f"{r['max_dd']:.2f}%", "red", "Pior queda")
+
+st.markdown("<br>", unsafe_allow_html=True)
+m1,m2,m3,m4,m5,m6 = st.columns(6)
+m1.metric("Precisão",   f"{r['prec']:.1%}")
+m2.metric("Recall",     f"{r['rec']:.1%}")
+m3.metric("F1-Score",   f"{r['f1']:.3f}")
+m4.metric("ROC-AUC",    f"{r['roc']:.3f}")
+m5.metric("Sortino",    f"{r['sortino']:.2f}")
+m6.metric("Cap. Final", f"${r['capital_final']:,.0f}")
+
+st.markdown("---")
+
+# ==============================================================================
+# TABS DE GRÁFICOS
+# ==============================================================================
+tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
+    "📉 Equity & Preço","🔬 Sinais ML","📊 Análises",
+    "🏆 Modelos","🔁 Walk-Forward","🎯 Previsão"
+])
+
+PLT_BG   = '#0b0e14'
+PLT_CARD = '#131720'
+PLT_GRID = '#2a3048'
+PLT_TEXT = '#e8eaf6'
+
+def base_layout(h=500):
+    return dict(height=h, paper_bgcolor=PLT_BG, plot_bgcolor=PLT_CARD,
+                font=dict(color=PLT_TEXT), legend=dict(bgcolor=PLT_CARD),
+                margin=dict(l=50,r=20,t=50,b=40))
+
+def update_axes(fig):
+    fig.update_xaxes(gridcolor=PLT_GRID, zeroline=False)
+    fig.update_yaxes(gridcolor=PLT_GRID, zeroline=False)
+    return fig
+
+# ── Tab 1: Equity & Preço ─────────────────────────────────────────────────────
+with tab1:
+    df_raw_p = r['df_raw']
+    df_out_p = r['df_out']
+    eq_df    = r['eq_df']
+
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        row_heights=[0.45,0.35,0.20],
+                        subplot_titles=["Preço + Sinais de Compra",
+                                        "Equity Curve (Conjunto de Teste)",
+                                        "Drawdown (%)"])
+    # Preço
+    fig.add_trace(go.Scatter(x=df_raw_p.index, y=df_raw_p['Close'],
+                             name="Preço", line=dict(color='#58a6ff',width=1.5)), row=1,col=1)
+    buys = df_out_p[df_out_p['sinal']==1]
+    fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'], mode='markers',
+                             name="Compra", marker=dict(color='#3fb950',size=5,symbol='triangle-up')),
+                  row=1,col=1)
+    # Equity
+    fig.add_trace(go.Scatter(x=eq_df['date'], y=eq_df['equity'],
+                             name="Equity", fill='tozeroy',
+                             line=dict(color='#bc8cff',width=2),
+                             fillcolor='rgba(188,140,255,0.1)'), row=2,col=1)
+    fig.add_hline(y=CAPITAL, line_dash="dash", line_color="#8b949e", row=2,col=1)
+    # Drawdown
+    dd = r['dd_arr'][:len(eq_df)]
+    fig.add_trace(go.Scatter(x=eq_df['date'][:len(dd)], y=dd*100,
+                             name="Drawdown", fill='tozeroy',
+                             line=dict(color='#f85149',width=1),
+                             fillcolor='rgba(248,81,73,0.12)'), row=3,col=1)
+
+    fig.update_layout(**base_layout(650))
+    update_axes(fig)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ── Tab 2: Sinais ML ──────────────────────────────────────────────────────────
+with tab2:
+    df_s = r['df_out']
+    fig2 = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.4,0.3,0.3],
+                         subplot_titles=["Probabilidade Predita","RSI 14","MACD"])
+
+    fig2.add_trace(go.Scatter(x=df_s.index, y=df_s['proba'],
+                              name="Prob Alta", line=dict(color='#58a6ff',width=1.5)), row=1,col=1)
+    fig2.add_hline(y=THRESH, line_dash="dash", line_color="#d29922",
+                   annotation_text=f"Threshold {THRESH:.0%}", row=1,col=1)
+
+    if 'rsi_14' in df_s.columns:
+        fig2.add_trace(go.Scatter(x=df_s.index, y=df_s['rsi_14'],
+                                  name="RSI 14", line=dict(color='#bc8cff',width=1.5)), row=2,col=1)
+        fig2.add_hline(y=70, line_dash="dot", line_color="#f85149", row=2,col=1)
+        fig2.add_hline(y=30, line_dash="dot", line_color="#3fb950", row=2,col=1)
+
+    if 'macd' in df_s.columns:
+        fig2.add_trace(go.Bar(x=df_s.index, y=df_s['macd_hist'],
+                              name="MACD Hist",
+                              marker_color=np.where(df_s['macd_hist']>=0,'#3fb950','#f85149')),
+                       row=3,col=1)
+        fig2.add_trace(go.Scatter(x=df_s.index, y=df_s['macd'],
+                                  name="MACD", line=dict(color='#58a6ff',width=1)), row=3,col=1)
+        fig2.add_trace(go.Scatter(x=df_s.index, y=df_s['macd_signal'],
+                                  name="Signal", line=dict(color='#d29922',width=1)), row=3,col=1)
+
+    fig2.update_layout(**base_layout(620))
+    update_axes(fig2)
+    st.plotly_chart(fig2, use_container_width=True)
+
+# ── Tab 3: Análises (ROC, CM, Threshold, Distribuição, Overfitting) ───────────
+with tab3:
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        # ROC Curve
+        fig_roc = go.Figure()
+        fig_roc.add_trace(go.Scatter(x=r['fpr'], y=r['tpr'], fill='tozeroy',
+                                     name=f"AUC={r['roc']:.3f}",
+                                     line=dict(color='#58a6ff',width=2),
+                                     fillcolor='rgba(88,166,255,0.1)'))
+        fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines',
+                                     name='Random', line=dict(color='#8b949e',dash='dash')))
+        fig_roc.update_layout(title="ROC Curve", xaxis_title="FPR", yaxis_title="TPR",
+                               **base_layout(380))
+        update_axes(fig_roc)
+        st.plotly_chart(fig_roc, use_container_width=True)
+
+        # Threshold analysis
+        if not r['df_thr'].empty:
+            fig_thr = go.Figure()
+            df_t = r['df_thr']
+            for col_t, clr, nm in [('f1','#58a6ff','F1'),('acc','#bc8cff','Acc'),
+                                    ('prec','#3fb950','Prec')]:
+                fig_thr.add_trace(go.Scatter(x=df_t['thr'], y=df_t[col_t],
+                                             name=nm, line=dict(color=clr,width=2)))
+            fig_thr.add_vline(x=THRESH, line_dash="dash", line_color="#d29922",
+                              annotation_text=f"Atual {THRESH:.2f}")
+            fig_thr.update_layout(title="Threshold vs Métricas",
+                                   xaxis_title="Threshold", **base_layout(330))
+            update_axes(fig_thr)
+            st.plotly_chart(fig_thr, use_container_width=True)
+
+    with col_b:
+        # Confusion Matrix
+        cm = r['cm']
+        fig_cm = go.Figure(go.Heatmap(
+            z=cm, x=['Queda','Alta'], y=['Queda','Alta'],
+            colorscale='Blues', showscale=False,
+            text=cm, texttemplate="%{text}", textfont=dict(size=18,color='white')))
+        fig_cm.update_layout(title="Confusion Matrix",
+                              xaxis_title="Predito", yaxis_title="Real",
+                              **base_layout(340))
+        st.plotly_chart(fig_cm, use_container_width=True)
+
+        # Overfitting
+        if not r['df_ov'].empty:
+            df_ov_p = r['df_ov'].reset_index()
+            metr_names = ['Acc','F1','ROC-AUC']
+            conj_names = df_ov_p['index'].tolist()
+            clrs = ['#58a6ff','#bc8cff','#3fb950']
+            fig_ov = go.Figure()
+            for i, met in enumerate(metr_names):
+                if met in df_ov_p.columns:
+                    fig_ov.add_trace(go.Bar(name=met, x=conj_names,
+                                            y=df_ov_p[met], marker_color=clrs[i]))
+            fig_ov.update_layout(title=f"Overfitting Check (Gap ROC={r['gap_roc']:.3f})",
+                                  barmode='group', **base_layout(330))
+            update_axes(fig_ov)
+            st.plotly_chart(fig_ov, use_container_width=True)
+
+# ── Tab 4: Ranking de Modelos ─────────────────────────────────────────────────
+with tab4:
+    df_m = r['df_modelos']
+    col_m1, col_m2 = st.columns(2)
+
+    with col_m1:
+        fig_m = go.Figure(go.Bar(
+            x=df_m['ROC'], y=df_m['Modelo'], orientation='h',
+            marker_color=['#58a6ff' if i==0 else '#2a3048' for i in range(len(df_m))],
+            text=[f"{v:.3f}" for v in df_m['ROC']], textposition='outside'))
+        fig_m.update_layout(title="ROC-AUC por Modelo (Teste)", **base_layout(380))
+        update_axes(fig_m)
+        st.plotly_chart(fig_m, use_container_width=True)
+
+    with col_m2:
+        # Feature Importance (top 20)
+        mi = r['mi_rank']
+        if isinstance(mi, pd.Series) and not mi.empty:
+            top_mi = mi.head(20).sort_values()
+            fig_fi = go.Figure(go.Bar(
+                x=top_mi.values, y=top_mi.index, orientation='h',
+                marker_color='#bc8cff'))
+            fig_fi.update_layout(title="Top 20 Features (Mutual Information)",
+                                  **base_layout(420))
+            update_axes(fig_fi)
+            st.plotly_chart(fig_fi, use_container_width=True)
+
+    st.markdown("#### 📋 Comparativo Completo")
+    st.dataframe(df_m.style.format({
+        'Acc':'{:.1%}','F1':'{:.3f}','ROC':'{:.3f}','Prec':'{:.1%}','Rec':'{:.1%}'
+    }).highlight_max(subset=['ROC','Acc','F1'], color='#1f3a1f'),
+    use_container_width=True)
+
+# ── Tab 5: Walk-Forward ───────────────────────────────────────────────────────
+with tab5:
+    df_wf = r['df_wf']
+    if not df_wf.empty:
+        col_w1, col_w2 = st.columns(2)
+        with col_w1:
+            fig_wf1 = go.Figure()
+            fig_wf1.add_trace(go.Bar(x=df_wf['Fold'].astype(str), y=df_wf['ROC'],
+                                     name="ROC-AUC", marker_color='#58a6ff'))
+            fig_wf1.add_hline(y=0.5, line_dash="dash", line_color="#f85149")
+            fig_wf1.update_layout(title="Walk-Forward — ROC-AUC por Fold", **base_layout(350))
+            update_axes(fig_wf1)
+            st.plotly_chart(fig_wf1, use_container_width=True)
+
+        with col_w2:
+            clrs_wf = ['#3fb950' if v>=0 else '#f85149' for v in df_wf['Retorno']]
+            fig_wf2 = go.Figure(go.Bar(
+                x=df_wf['Fold'].astype(str), y=df_wf['Retorno']*100,
+                marker_color=clrs_wf,
+                text=[f"{v*100:.1f}%" for v in df_wf['Retorno']], textposition='outside'))
+            fig_wf2.update_layout(title="Walk-Forward — Retorno por Fold (%)", **base_layout(350))
+            update_axes(fig_wf2)
+            st.plotly_chart(fig_wf2, use_container_width=True)
+
+        st.markdown("#### 📋 Detalhes por Fold")
+        st.dataframe(df_wf.style.format({
+            'Acc':'{:.1%}','ROC':'{:.3f}','F1':'{:.3f}','Retorno':'{:.2%}'
+        }), use_container_width=True)
+
+        wf_roc_m = df_wf['ROC'].mean()
+        wf_ret_m = df_wf['Retorno'].mean()
+        st.info(f"**ROC-AUC médio:** {wf_roc_m:.3f} ± {df_wf['ROC'].std():.3f} &nbsp;|&nbsp; "
+                f"**Retorno médio:** {wf_ret_m:.2%} ± {df_wf['Retorno'].std():.2%}")
+    else:
+        st.warning("Dados insuficientes para walk-forward.")
+
+# ── Tab 6: Previsão Próximo Dia ───────────────────────────────────────────────
+with tab6:
+    st.markdown("### 🎯 Previsão para o Próximo Dia de Negociação")
+    st.markdown(f"**Data de referência:** `{r['data_ref']}` &nbsp;|&nbsp; "
+                f"**Preço atual:** `{r['preco_atual']:.4f}`")
+
+    sinal_color = ("#3fb950" if "COMPRA" in r['sinal_prod'] else
+                   "#f85149" if "VENDA" in r['sinal_prod'] else "#8b949e")
+
+    st.markdown(f"""
+    <div style="background:#131720;border:2px solid {sinal_color};border-radius:16px;
+                padding:32px;text-align:center;margin:20px 0;">
+        <div style="font-size:3rem;margin-bottom:8px;">{r['sinal_prod']}</div>
+        <div style="color:#8b949e;font-size:0.9rem;">Ensemble VotingClassifier</div>
+        <div style="margin-top:20px;display:flex;justify-content:center;gap:40px;">
+            <div><div style="color:#8b949e;font-size:0.75rem">PROB. ALTA</div>
+                 <div style="font-size:1.5rem;color:#3fb950;font-weight:700">{r['prob_alta']:.1%}</div></div>
+            <div><div style="color:#8b949e;font-size:0.75rem">PROB. QUEDA</div>
+                 <div style="font-size:1.5rem;color:#f85149;font-weight:700">{r['prob_queda']:.1%}</div></div>
+            <div><div style="color:#8b949e;font-size:0.75rem">THRESHOLD</div>
+                 <div style="font-size:1.5rem;color:#d29922;font-weight:700">{THRESH:.0%}</div></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Gauge
+    fig_g = go.Figure(go.Indicator(
+        mode="gauge+number+delta",
+        value=r['prob_alta']*100,
+        delta={'reference':50, 'suffix':'%'},
+        number={'suffix':'%', 'font':{'color':PLT_TEXT}},
+        gauge={
+            'axis':{'range':[0,100],'tickcolor':PLT_TEXT},
+            'bar':{'color':sinal_color,'thickness':0.3},
+            'bgcolor':PLT_CARD,
+            'steps':[{'range':[0,40],'color':'#1a0f0f'},
+                     {'range':[40,60],'color':'#1a1a0f'},
+                     {'range':[60,100],'color':'#0f1a0f'}],
+            'threshold':{'line':{'color':'#d29922','width':3},
+                         'thickness':0.8,'value':THRESH*100},
+        },
+        title={'text':"Probabilidade de Alta (%)"}
+    ))
+    fig_g.update_layout(paper_bgcolor=PLT_BG, font=dict(color=PLT_TEXT), height=320)
+    st.plotly_chart(fig_g, use_container_width=True)
+
+    st.warning("⚠️ Esta previsão é para fins educacionais/pesquisa. "
+               "Não constitui recomendação de investimento.")
+
+# ==============================================================================
+# DADOS BRUTOS
+# ==============================================================================
+st.markdown("---")
+with st.expander("🗂️ Dados brutos (últimas 100 barras)"):
+    st.dataframe(r['df_raw'].tail(100).style.format(precision=4), use_container_width=True)
+
+with st.expander("🤖 Sinais do modelo (conjunto de teste, últimas 60 barras)"):
+    cols_show = ['Close','proba','sinal']
+    for c_extra in ['rsi_14','macd','macd_signal','adx_14','bb_pos_20']:
+        if c_extra in r['df_out'].columns:
+            cols_show.append(c_extra)
+    st.dataframe(r['df_out'][cols_show].tail(60).style.format(precision=4),
+                 use_container_width=True)
+
+st.caption("⚠️ Dashboard educacional. Resultados passados não garantem resultados futuros.")
