@@ -960,6 +960,9 @@ if executar or 'resultado' not in st.session_state:
 # EXIBIÇÃO DOS RESULTADOS
 # ==============================================================================
 
+if 'resultado' not in st.session_state:
+    st.stop()
+
 res = st.session_state['resultado']
 bt  = res['bt']
 mf  = res['metricas_fin']
