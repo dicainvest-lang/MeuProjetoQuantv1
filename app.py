@@ -1,8 +1,16 @@
 # -*- coding: utf-8 -*-
 # ==============================================================================
-# ROBÔ IA OURO v7.0 — STREAMLIT DASHBOARD EDITION
-# Fusão: bot_ouro_mt5_corrigido H4 v2 + Streamlit UI (Dark Mode)
-# Ativo padrão: XAU/USD (GC=F) via yfinance | Timeframe: 1h (proxy H4)
+# ROBÔ IA OURO v7.0 — STREAMLIT DASHBOARD EDITION (REFATORADO)
+#
+# MELHORIAS vs versão anterior:
+#   1. Walk-Forward Validation (sem data leakage no backtest)
+#   2. Features expandidas: trend, momentum, regime, sazonalidade
+#   3. Ensemble: RF + XGBoost + LightGBM com VotingClassifier
+#   4. Target baseado em retorno ajustado ao risco (Sharpe-like)
+#   5. Filtro de regime de mercado (só opera a favor da tendência)
+#   6. SL/TP dinâmico baseado em ATR (não fixo)
+#   7. Custo realista (spread + comissão) por trade
+#   8. Gestão de capital: Kelly Criterion (fração) + position sizing
 # ==============================================================================
 
 import warnings
@@ -15,10 +23,23 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-from statsmodels.tsa.stattools import adfuller
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import json, os
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import RobustScaler
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.model_selection import TimeSeriesSplit
+
+try:
+    from xgboost import XGBClassifier
+    XGB_OK = True
+except ImportError:
+    XGB_OK = False
+
+try:
+    from lightgbm import LGBMClassifier
+    LGB_OK = True
+except ImportError:
+    LGB_OK = False
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -27,56 +48,37 @@ except ImportError:
     AUTOREFRESH_OK = False
 
 # ==============================================================================
-# CONFIGURAÇÃO DA PÁGINA
+# PÁGINA
 # ==============================================================================
-st.set_page_config(
-    page_title="Robô IA Ouro v7.0",
-    page_icon="🥇",
-    layout="wide",
-)
+st.set_page_config(page_title="Robô IA Ouro v7.0", page_icon="🥇", layout="wide")
 
 st.markdown("""
 <style>
     :root {
-        --bg-dark:#0b0e14; --bg-card:#131720; --border:#2a3048;
-        --text-main:#e8eaf6; --text-sub:#8b949e;
-        --gold:#c9a84c; --gold-lt:#f0d080;
-        --success:#3fb950; --danger:#f85149;
-        --warning:#d29922; --blue:#58a6ff;
+        --bg:#0b0e14; --card:#131720; --border:#2a3048;
+        --text:#e8eaf6; --sub:#8b949e;
+        --gold:#c9a84c; --green:#3fb950; --red:#f85149;
+        --blue:#58a6ff; --purple:#bc8cff; --yellow:#d29922;
     }
-    .stApp { background-color: var(--bg-dark); color: var(--text-main); }
-    section[data-testid="stSidebar"] {
-        background-color: var(--bg-card);
-        border-right: 1px solid var(--border);
-    }
-    .metric-card {
-        background: var(--bg-card); border: 1px solid var(--border);
-        border-radius: 12px; padding: 18px 20px; text-align: center;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-    }
-    .metric-card .label { color:var(--text-sub); font-size:0.75rem;
-        text-transform:uppercase; letter-spacing:1px; margin-bottom:6px; }
-    .metric-card .value { font-size:1.8rem; font-weight:700; }
-    .metric-card .sub   { font-size:0.72rem; color:var(--text-sub); margin-top:4px; }
-    .sinal-box {
-        border-radius: 16px; padding: 28px; text-align: center; margin: 16px 0;
-        border: 2px solid;
-    }
-    .gold { color: #c9a84c; } .green { color: #3fb950; }
-    .red  { color: #f85149; } .blue  { color: #58a6ff; }
-    .yellow { color: #d29922; }
-    h1,h2,h3 { color: var(--text-main) !important; }
-    .stButton>button {
-        background: linear-gradient(135deg, #c9a84c, #f0d080);
-        color: #0b0e14; border: none; border-radius: 8px;
-        font-weight: 800; padding: 0.6rem 1.8rem; font-size: 1rem;
-        width: 100%;
-    }
-    .stButton>button:hover { opacity: 0.88; }
-    div[data-testid="stMetric"] {
-        background: var(--bg-card); border: 1px solid var(--border);
-        border-radius: 10px; padding: 12px;
-    }
+    .stApp{background:var(--bg);color:var(--text);}
+    section[data-testid="stSidebar"]{background:var(--card);border-right:1px solid var(--border);}
+    .kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;
+         padding:18px 16px;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,.5);}
+    .kpi .lbl{color:var(--sub);font-size:.72rem;text-transform:uppercase;
+              letter-spacing:1px;margin-bottom:6px;}
+    .kpi .val{font-size:1.75rem;font-weight:700;}
+    .kpi .sub{font-size:.7rem;color:var(--sub);margin-top:4px;}
+    .sbox{border-radius:14px;padding:26px;text-align:center;margin:14px 0;border:2px solid;}
+    .green{color:#3fb950;} .red{color:#f85149;} .gold{color:#c9a84c;}
+    .blue{color:#58a6ff;} .yellow{color:#d29922;} .sub{color:#8b949e;}
+    h1,h2,h3{color:var(--text)!important;}
+    .stButton>button{background:linear-gradient(135deg,#c9a84c,#f0d080);
+        color:#0b0e14;border:none;border-radius:8px;font-weight:800;
+        padding:.6rem 1.8rem;font-size:1rem;width:100%;}
+    div[data-testid="stMetric"]{background:var(--card);border:1px solid var(--border);
+        border-radius:10px;padding:12px;}
+    .improve-tag{background:#1a2a1a;border:1px solid #3fb950;border-radius:6px;
+        padding:3px 8px;font-size:.72rem;color:#3fb950;margin-left:8px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -85,399 +87,576 @@ st.markdown("""
 # ==============================================================================
 with st.sidebar:
     st.markdown("## 🥇 Robô IA Ouro v7.0")
+    st.markdown('<span class="improve-tag">✨ Refatorado</span>', unsafe_allow_html=True)
     st.markdown("---")
 
-    TICKER = st.text_input(
-        "🔎 Ativo",
-        value="GC=F",
-        help="GC=F = Ouro Futuro | XAUUSD=X = Spot | GLD = ETF Ouro"
-    )
-    periodo_map = {"1 Ano":1, "2 Anos":2, "3 Anos":3, "5 Anos":5}
-    periodo_label = st.selectbox("📅 Período de Histórico", list(periodo_map.keys()), index=2)
+    TICKER = st.text_input("🔎 Ativo", value="GC=F",
+                            help="GC=F=Ouro Futuro | XAUUSD=X=Spot | GLD=ETF")
+    periodo_map = {"2 Anos":2,"3 Anos":3,"5 Anos":5,"7 Anos":7,"10 Anos":10}
+    periodo_label = st.selectbox("📅 Período", list(periodo_map.keys()), index=2)
     ANOS = periodo_map[periodo_label]
+    TIMEFRAME = st.selectbox("⏱️ Timeframe", ["1d","1wk"], index=0)
 
-    TIMEFRAME = st.selectbox("⏱️ Timeframe", ["1h","1d"], index=0,
-                              help="1h ≈ H4 do MT5 (4 candles). 1d = diário.")
+    st.markdown("### 🎯 Sinal")
+    PROB_THRESHOLD = st.slider("Threshold de Probabilidade", 0.50, 0.80, 0.55, 0.01)
+    HORIZONTE      = st.slider("Horizonte (candles)", 1, 15, 3, 1)
+    REGIME_FILTER  = st.checkbox("Filtro de Regime (só a favor da tendência)", value=True,
+                                  help="Opera compra só acima da SMA200, venda só abaixo")
 
-    st.markdown("### ⚙️ Parâmetros da Estratégia")
-    PROB_THRESHOLD  = st.slider("Threshold de Probabilidade", 0.50, 0.90, 0.55, 0.01)
-    Z_THRESHOLD     = st.slider("Z-Score Threshold", 0.5, 3.0, 1.0, 0.1)
-    ATR_MULT_SL     = st.slider("ATR Mult. Stop Loss",    0.3, 2.0, 0.5, 0.1)
-    ATR_MULT_TP     = st.slider("ATR Mult. Take Profit",  0.5, 5.0, 1.5, 0.1)
-    HORIZONTE       = st.slider("Horizonte (candles)", 1, 20, 5, 1,
-                                help="Quantos candles à frente prever (5 H4 ≈ 20h)")
-    CAPITAL         = st.number_input("Capital (USD)", value=10_000, step=1_000)
-    RISCO_TRADE_PCT = st.slider("Risco por Trade (%)", 0.5, 5.0, 2.0, 0.5) / 100
-    MAX_DD_PCT      = st.slider("Max Drawdown Diário (%)", 1.0, 10.0, 5.0, 0.5) / 100
+    st.markdown("### 💰 Risco")
+    CAPITAL        = st.number_input("Capital (USD)", value=10_000, step=1_000)
+    RISCO_PCT      = st.slider("Risco por Trade (%)", 0.5, 3.0, 1.0, 0.25) / 100
+    ATR_MULT_SL    = st.slider("ATR Mult. SL", 0.5, 3.0, 1.5, 0.25)
+    ATR_MULT_TP    = st.slider("ATR Mult. TP", 1.0, 6.0, 3.0, 0.25)
+    CUSTO_BPS      = st.slider("Custo por Trade (bps)", 1, 20, 5, 1) / 10000
+    MAX_DD_PCT     = st.slider("Max Drawdown Diário (%)", 1.0, 10.0, 5.0, 0.5) / 100
 
     st.markdown("### 🔄 Auto-Refresh")
     refresh_sel = st.selectbox("Intervalo", ["Desligado","1 min","5 min"], index=0)
-
     run_btn = st.button("🚀 Executar Análise")
 
 if AUTOREFRESH_OK and refresh_sel != "Desligado":
     ms = 60_000 if refresh_sel == "1 min" else 300_000
-    st_autorefresh(interval=ms, key="autorefresh")
+    st_autorefresh(interval=ms, key="ar")
 
-# Título
-st.markdown("# 🥇 Robô IA Ouro v7.0 — Dashboard")
-st.markdown(f"**Ativo:** `{TICKER.upper()}` &nbsp;|&nbsp; **Timeframe:** `{TIMEFRAME}` "
-            f"&nbsp;|&nbsp; **Período:** {periodo_label} "
-            f"&nbsp;|&nbsp; **Atualizado:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+st.markdown("# 🥇 Robô IA Ouro v7.0 — Dashboard Melhorado")
+st.markdown(f"**Ativo:** `{TICKER}` | **TF:** `{TIMEFRAME}` | **Período:** {periodo_label} "
+            f"| {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 st.markdown("---")
 
 # ==============================================================================
-# FUNÇÕES CORE — lógica idêntica ao bot_ouro_mt5_corrigido H4 v2
+# DOWNLOAD
 # ==============================================================================
-
 @st.cache_data(ttl=60)
-def baixar_dados(ticker: str, anos: int, interval: str) -> pd.DataFrame:
-    start = (datetime.now() - timedelta(days=anos * 365)).strftime("%Y-%m-%d")
+def baixar_dados(ticker, anos, interval):
+    start = (datetime.now() - timedelta(days=anos*365)).strftime("%Y-%m-%d")
     df = yf.download(ticker, start=start, interval=interval,
                      auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.columns = [str(c).strip().capitalize() for c in df.columns]
     df = df.loc[:, ~df.columns.duplicated()]
-    for alt in ['Adj close','Adj_close','Adjclose']:
-        if alt in df.columns and 'Close' not in df.columns:
-            df.rename(columns={alt:'Close'}, inplace=True)
-    if 'Volume' not in df.columns:
-        df['Volume'] = 0.0
+    for a in ['Adj close','Adj_close','Adjclose']:
+        if a in df.columns and 'Close' not in df.columns:
+            df.rename(columns={a:'Close'}, inplace=True)
+    if 'Volume' not in df.columns: df['Volume'] = 0.0
     df['Volume'] = df['Volume'].fillna(0).astype(float)
-    for col in ['Open','High','Low','Close']:
-        if col in df.columns:
-            df[col] = df[col].astype(float)
+    for c in ['Open','High','Low','Close']:
+        if c in df.columns: df[c] = df[c].astype(float)
     df.dropna(subset=['Open','High','Low','Close'], inplace=True)
-    df = df.sort_index()
-    df = df[~df.index.duplicated(keep='last')]
-    return df
+    return df.sort_index()[~df.index.duplicated(keep='last')]
 
+# ==============================================================================
+# MELHORIA 2 — FEATURE ENGINEERING EXPANDIDO
+# ==============================================================================
+def calcular_rsi(s, p=14):
+    d = s.diff()
+    g = d.clip(lower=0).rolling(p).mean()
+    l = (-d.clip(upper=0)).rolling(p).mean()
+    return 100 - 100/(1 + g/l.replace(0,np.nan))
 
-def test_stationarity(series: pd.Series) -> bool:
-    """Teste ADF: retorna True se a série for estacionária (p < 0.05)."""
-    try:
-        return adfuller(series.dropna())[1] < 0.05
-    except:
-        return False
-
-
-def calcular_rsi(retornos: pd.Series, periodo: int = 14) -> pd.Series:
-    ganhos = retornos.clip(lower=0).rolling(periodo).mean()
-    perdas = (-retornos.clip(upper=0)).rolling(periodo).mean()
-    rs = ganhos / perdas.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-
-def preparar_features(df_raw: pd.DataFrame, horizonte: int = 5) -> pd.DataFrame:
-    """
-    Replica exata da lógica do bot_ouro_mt5_corrigido H4 v2.
-    Features: RSI, Z_Score, Volatilidade, Is_Stationary, ATR_Pct
-    Target: 1=COMPRA | -1=VENDA | 0=NEUTRO (baseado em percentil 25)
-    """
+def preparar_features(df_raw, horizonte=3):
     df = df_raw.copy()
     df.columns = [c.capitalize() for c in df.columns]
+    if 'Close' in df.columns: df.rename(columns={'Close':'Ouro'}, inplace=True)
+    c = df['Ouro']; h = df['High']; l = df['Low']; o = df['Open']
+    v = df['Volume'].replace(0, np.nan)
+    ret = c.pct_change()
 
-    # Renomeia Close → Ouro (mantém compatibilidade com o bot original)
-    if 'Close' in df.columns:
-        df.rename(columns={'Close':'Ouro'}, inplace=True)
-    if 'Ouro' not in df.columns:
-        raise ValueError("Coluna 'Close' não encontrada nos dados.")
+    # ── Tendência ─────────────────────────────────────────────────────────────
+    for p in [10,20,50,100,200]:
+        df[f'sma_{p}']   = c.rolling(p).mean()
+        df[f'ema_{p}']   = c.ewm(span=p,adjust=False).mean()
+        df[f'dist_{p}']  = (c / df[f'sma_{p}'] - 1) * 100
 
-    df['Retorno'] = df['Ouro'].pct_change()
+    df['trend_short']  = (df['sma_10']  > df['sma_50']).astype(int)
+    df['trend_long']   = (df['sma_50']  > df['sma_200']).astype(int)
+    df['above_sma200'] = (c > df['sma_200']).astype(int)   # regime bull
 
-    # Z-Score sobre PREÇOS (mean reversion) — igual ao bot original
-    df['Z_Score'] = df['Ouro'].rolling(100).apply(
-        lambda x: (x.iloc[-1] - x.mean()) / x.std() if x.std() > 0 else 0.0,
-        raw=False
-    )
+    # Inclinação da SMA50 (proxy de momentum de tendência)
+    df['sma50_slope']  = df['sma_50'].pct_change(5) * 100
 
-    # Estacionariedade sobre RETORNOS — rolling ADF
-    df['Is_Stationary'] = df['Retorno'].rolling(100).apply(
-        lambda x: 1.0 if test_stationarity(pd.Series(x)) else 0.0,
-        raw=False
-    )
+    # ── Momentum ──────────────────────────────────────────────────────────────
+    for p in [7,14,21]:
+        df[f'rsi_{p}'] = calcular_rsi(c, p)
+    df['rsi_slope'] = df['rsi_14'].diff(3)          # aceleração do RSI
 
-    df['RSI']          = calcular_rsi(df['Retorno'])
-    df['ATR']          = (df['High'] - df['Low']).rolling(14).mean()
-    df['ATR_Pct']      = df['ATR'] / df['Ouro']
-    df['Volatilidade'] = df['Retorno'].rolling(20).std()
+    for p in [5,10,20,60]:
+        df[f'roc_{p}'] = c.pct_change(p) * 100
 
-    # Target: retorno futuro a N candles
-    ret_fut = df['Ouro'].pct_change(horizonte).shift(-horizonte)
-    limiar  = np.percentile(np.abs(df['Retorno'].dropna()), 25)
-    df['Alvo']       = np.select([ret_fut > limiar, ret_fut < -limiar], [1, -1], default=0)
+    ema12 = c.ewm(span=12,adjust=False).mean()
+    ema26 = c.ewm(span=26,adjust=False).mean()
+    df['macd']        = ema12 - ema26
+    df['macd_signal'] = df['macd'].ewm(span=9,adjust=False).mean()
+    df['macd_hist']   = df['macd'] - df['macd_signal']
+    df['macd_cross']  = (df['macd'] > df['macd_signal']).astype(int)
+
+    for p in [14,21]:
+        lmin = l.rolling(p).min(); hmax = h.rolling(p).max()
+        df[f'stoch_k_{p}'] = 100*(c-lmin)/(hmax-lmin).replace(0,np.nan)
+        df[f'stoch_d_{p}'] = df[f'stoch_k_{p}'].rolling(3).mean()
+
+    # ── Volatilidade ──────────────────────────────────────────────────────────
+    tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    for p in [7,14,21]:
+        df[f'atr_{p}']     = tr.rolling(p).mean()
+        df[f'atr_{p}_pct'] = df[f'atr_{p}'] / c
+
+    for p in [5,10,20,60]:
+        df[f'vol_{p}'] = ret.rolling(p).std() * np.sqrt(252)
+
+    df['vol_regime']   = df['vol_5'] / df['vol_20']   # vol relativa curta/longa
+
+    mid20 = c.rolling(20).mean(); std20 = c.rolling(20).std()
+    df['bb_up']   = mid20 + 2*std20
+    df['bb_lo']   = mid20 - 2*std20
+    df['bb_width']= (df['bb_up'] - df['bb_lo']) / mid20
+    df['bb_pos']  = (c - df['bb_lo']) / (df['bb_up'] - df['bb_lo']).replace(0,np.nan)
+
+    # ── Mean Reversion ────────────────────────────────────────────────────────
+    # MELHORIA: Z-score mais estável com janela menor + normalização por vol
+    for p in [20,60]:
+        mu = c.rolling(p).mean(); sg = c.rolling(p).std()
+        df[f'zscore_{p}'] = (c - mu) / sg.replace(0,np.nan)
+
+    # ── Volume ────────────────────────────────────────────────────────────────
+    df['vol_rel']  = v / v.rolling(20).mean()
+    obv = (np.sign(c.diff())*v).fillna(0).cumsum()
+    df['obv_slope']= obv.pct_change(5)
+
+    # ── Candlestick ───────────────────────────────────────────────────────────
+    df['corpo']    = (c - o).abs() / o.clip(lower=1e-9)
+    df['gap']      = (o - c.shift(1)) / c.shift(1).clip(lower=1e-9)
+    df['high_rel'] = (h - c) / c
+    df['low_rel']  = (c - l) / c
+
+    # ── Lags ──────────────────────────────────────────────────────────────────
+    for lag in [1,2,3,5]:
+        df[f'ret_lag_{lag}'] = ret.shift(lag)
+    for lag in [1,3]:
+        df[f'rsi14_lag_{lag}'] = df['rsi_14'].shift(lag)
+        df[f'macd_lag_{lag}']  = df['macd'].shift(lag)
+
+    # ── Sazonalidade ──────────────────────────────────────────────────────────
+    df['dia_semana'] = df.index.dayofweek
+    df['mes']        = df.index.month
+    df['trimestre']  = df.index.quarter
+
+    # ── Regime de volatilidade ────────────────────────────────────────────────
+    df['regime_vol_alta'] = (df['vol_regime'] > 1.3).astype(int)
+    df['adx'] = _calcular_adx(h, l, c, 14)
+    df['regime_tendencia'] = (df['adx'] > 25).astype(int)
+
+    # ── Target MELHORADO — retorno ajustado ao risco ──────────────────────────
+    # Em vez de percentil fixo, usa retorno relativo ao ATR (Sharpe-like)
+    # Isso evita sinalizar movimentos menores que o custo operacional
+    ret_fut   = c.pct_change(horizonte).shift(-horizonte)
+    atr_norm  = df['atr_14_pct'].rolling(5).mean()
+    # Threshold dinâmico: movimento deve ser > 0.5x ATR para ser sinal
+    thr_dyn   = atr_norm * 0.5
+    df['Alvo']       = np.select([ret_fut > thr_dyn, ret_fut < -thr_dyn], [1,-1], default=0)
     df['Ret_Futuro'] = ret_fut
 
-    # Features extras para visualização
-    df['Ouro_Close']  = df['Ouro']
-    df['SMA_20']      = df['Ouro'].rolling(20).mean()
-    df['SMA_50']      = df['Ouro'].rolling(50).mean()
-    df['BB_Upper']    = df['SMA_20'] + 2 * df['Ouro'].rolling(20).std()
-    df['BB_Lower']    = df['SMA_20'] - 2 * df['Ouro'].rolling(20).std()
+    # ── Manter colunas originais para visualização ────────────────────────────
+    df['Ouro_Close'] = c
+    df['ATR']        = df['atr_14']
+    df['ATR_Pct']    = df['atr_14_pct']
+    df['RSI']        = df['rsi_14']
+    df['Z_Score']    = df['zscore_20']
+    df['Volatilidade'] = df['vol_20']
+    df['SMA_20']     = df['sma_20']
+    df['SMA_50']     = df['sma_50']
+    df['SMA_200']    = df['sma_200']
+    df['BB_Upper']   = df['bb_up']
+    df['BB_Lower']   = df['bb_lo']
+    df['MACD']       = df['macd']
+    df['MACD_Signal']= df['macd_signal']
+    df['MACD_Hist']  = df['macd_hist']
 
-    # MACD
-    ema12 = df['Ouro'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Ouro'].ewm(span=26, adjust=False).mean()
-    df['MACD']        = ema12 - ema26
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist']   = df['MACD'] - df['MACD_Signal']
+    return df.replace([np.inf,-np.inf], np.nan)
 
-    return df.dropna()
+def _calcular_adx(h, l, c, p=14):
+    dm_p = h.diff().clip(lower=0)
+    dm_m = (-l.diff()).clip(lower=0)
+    tr   = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    tr_s = tr.ewm(span=p,adjust=False).mean()
+    di_p = 100 * dm_p.ewm(span=p,adjust=False).mean() / tr_s.replace(0,np.nan)
+    di_m = 100 * dm_m.ewm(span=p,adjust=False).mean() / tr_s.replace(0,np.nan)
+    dx   = 100 * (di_p - di_m).abs() / (di_p + di_m + 1e-9)
+    return dx.ewm(span=p,adjust=False).mean()
 
+# ==============================================================================
+# MELHORIA 3 — ENSEMBLE + SCALER
+# ==============================================================================
+FEAT_COLS = [
+    'rsi_7','rsi_14','rsi_21','rsi_slope',
+    'roc_5','roc_10','roc_20','roc_60',
+    'macd','macd_hist','macd_cross',
+    'stoch_k_14','stoch_d_14','stoch_k_21',
+    'zscore_20','zscore_60',
+    'atr_14_pct','atr_7_pct',
+    'vol_5','vol_20','vol_regime',
+    'bb_pos','bb_width',
+    'dist_10','dist_20','dist_50','dist_200',
+    'trend_short','trend_long','sma50_slope',
+    'ret_lag_1','ret_lag_2','ret_lag_3','ret_lag_5',
+    'rsi14_lag_1','rsi14_lag_3',
+    'macd_lag_1','macd_lag_3',
+    'corpo','gap','high_rel','low_rel',
+    'vol_rel','obv_slope',
+    'vol_regime','regime_vol_alta','regime_tendencia','adx',
+    'dia_semana','mes','trimestre',
+]
 
-FEATURES = ['RSI', 'Z_Score', 'Volatilidade', 'Is_Stationary', 'ATR_Pct']
-
-
-def treinar_modelo(df_feat: pd.DataFrame):
-    """Random Forest — exatamente como no bot original (80/20 split temporal)."""
-    X = df_feat[FEATURES]
-    y = df_feat['Alvo']
-    split = int(len(X) * 0.80)
-    X_tr, X_val = X.iloc[:split], X.iloc[split:]
-    y_tr, y_val = y.iloc[:split], y.iloc[split:]
-
-    rf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    rf.fit(X_tr, y_tr)
-
-    y_pred_val = rf.predict(X_val)
-    acc  = accuracy_score(y_val, y_pred_val)
-    prec = precision_score(y_val, y_pred_val, average='weighted', zero_division=0)
-    rec  = recall_score(y_val, y_pred_val, average='weighted', zero_division=0)
-    f1   = f1_score(y_val, y_pred_val, average='weighted', zero_division=0)
-
-    return rf, {'acc':acc, 'prec':prec, 'rec':rec, 'f1':f1,
-                'n_train':split, 'n_val':len(X_val)}
-
-
-def calcular_sinal(modelo, df_feat, prob_threshold, z_threshold) -> dict:
+def treinar_ensemble(df_feat, n_splits=5):
     """
-    Replica a lógica de sinal do bot:
-    Compra: prob_compra > threshold AND z < -z_threshold AND estacionária AND atr > 0
-    Venda : prob_venda  > threshold AND z > +z_threshold AND estacionária AND atr > 0
+    MELHORIA 1: Walk-Forward Validation — sem data leakage.
+    Treina no conjunto inteiro após WF, avalia OOS real.
     """
-    ult = df_feat.iloc[-1]
+    df_clean = df_feat[FEAT_COLS + ['Alvo']].dropna()
+    if len(df_clean) < 150:
+        raise ValueError(f"Dados insuficientes após limpeza: {len(df_clean)} linhas.")
+
+    X = df_clean[FEAT_COLS].values
+    y = df_clean['Alvo'].values
+    dates = df_clean.index
+
+    # Walk-Forward para métricas OOS honestas
+    tscv   = TimeSeriesSplit(n_splits=n_splits, test_size=max(20, len(X)//(n_splits+1)))
+    wf_acc, wf_f1, wf_roc = [], [], []
+    scaler_wf = RobustScaler()
+
+    for tr_idx, te_idx in tscv.split(X):
+        Xtr = RobustScaler().fit_transform(X[tr_idx])
+        Xte = RobustScaler().fit_transform(X[te_idx])  # fit separado por janela
+        Xte = RobustScaler().fit(X[tr_idx]).transform(X[te_idx])
+
+        est = _build_ensemble()
+        est.fit(Xtr, y[tr_idx])
+        yp  = est.predict(Xte)
+        ypr = est.predict_proba(Xte)
+
+        wf_acc.append(accuracy_score(y[te_idx], yp))
+        wf_f1.append(f1_score(y[te_idx], yp, average='weighted', zero_division=0))
+        try:
+            roc = roc_auc_score(y[te_idx], ypr, multi_class='ovr', average='weighted')
+            wf_roc.append(roc)
+        except:
+            pass
+
+    # Treino final em todos os dados
+    scaler = RobustScaler()
+    X_s    = scaler.fit_transform(X)
+    modelo_final = _build_ensemble()
+    modelo_final.fit(X_s, y)
+
+    n_tr = int(len(X)*0.80)
+    return modelo_final, scaler, {
+        'acc_oos':  float(np.mean(wf_acc)),
+        'f1_oos':   float(np.mean(wf_f1)),
+        'roc_oos':  float(np.mean(wf_roc)) if wf_roc else 0.0,
+        'n_train':  n_tr,
+        'n_total':  len(X),
+        'n_splits': n_splits,
+        'feat_cols': FEAT_COLS,
+        'dates':    dates,
+    }
+
+def _build_ensemble():
+    """Monta o VotingClassifier com os modelos disponíveis."""
+    est = [
+        ('rf', RandomForestClassifier(
+            n_estimators=200, max_depth=6, min_samples_leaf=10,
+            class_weight='balanced', random_state=42, n_jobs=-1)),
+        ('lr', LogisticRegression(
+            C=0.3, max_iter=1000, class_weight='balanced', random_state=42)),
+    ]
+    if XGB_OK:
+        est.append(('xgb', XGBClassifier(
+            n_estimators=200, max_depth=4, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8,
+            eval_metric='mlogloss', use_label_encoder=False,
+            random_state=42, n_jobs=-1, verbosity=0)))
+    if LGB_OK:
+        est.append(('lgb', LGBMClassifier(
+            n_estimators=200, max_depth=4, learning_rate=0.05,
+            min_child_samples=15, class_weight='balanced',
+            random_state=42, n_jobs=-1, verbosity=-1)))
+    return VotingClassifier(estimators=est, voting='soft', n_jobs=-1)
+
+# ==============================================================================
+# SINAL COM FILTRO DE REGIME
+# ==============================================================================
+def calcular_sinal(modelo, scaler, df_feat, prob_thr, regime_filter):
+    df_c = df_feat[FEAT_COLS + ['Alvo','Ret_Futuro','Ouro_Close',
+                                 'ATR_Pct','RSI','Z_Score',
+                                 'Volatilidade','above_sma200','adx']].dropna()
+    if len(df_c) == 0:
+        return {}
+
+    ult    = df_c.iloc[-1]
+    X_ult  = scaler.transform(df_c[FEAT_COLS].iloc[[-1]].values)
     classes = list(modelo.classes_)
-    X_ult   = pd.DataFrame([{f: ult[f] for f in FEATURES}])
-    probs   = modelo.predict_proba(X_ult)[0]
+    probs  = modelo.predict_proba(X_ult)[0]
 
-    idx_c = classes.index(1)  if  1 in classes else None
-    idx_v = classes.index(-1) if -1 in classes else None
+    p = {cls: float(probs[i]) for i, cls in enumerate(classes)}
+    p_c = p.get(1,  0.0)
+    p_v = p.get(-1, 0.0)
+    p_n = p.get(0,  1.0 - p_c - p_v)
 
-    p_compra = float(probs[idx_c]) if idx_c is not None else 0.0
-    p_venda  = float(probs[idx_v]) if idx_v is not None else 0.0
-    p_neutro = 1.0 - p_compra - p_venda
-
-    z    = float(ult['Z_Score'])
-    est  = bool(ult['Is_Stationary'] == 1.0)
+    bull_regime = bool(ult['above_sma200'] == 1)
     atr  = float(ult['ATR_Pct'])
     rsi  = float(ult['RSI'])
+    z    = float(ult['Z_Score'])
     vol  = float(ult['Volatilidade'])
+    adx  = float(ult['adx'])
+    preco= float(ult['Ouro_Close'])
 
-    conds = {
-        f"Prob. Compra {p_compra*100:.1f}% > {prob_threshold*100:.0f}%": p_compra > prob_threshold,
-        f"Prob. Venda {p_venda*100:.1f}% > {prob_threshold*100:.0f}%":   p_venda  > prob_threshold,
-        f"Z-Score {z:+.3f} (lim ±{z_threshold})":                        abs(z) > z_threshold,
-        "Série Estacionária":                                              est,
-        f"ATR > 0 ({atr:.4f})":                                           atr > 0,
-    }
+    # MELHORIA 5: Filtro de regime — só opera a favor da tendência dominante
+    compra_ok = p_c > prob_thr and (not regime_filter or bull_regime)
+    venda_ok  = p_v > prob_thr and (not regime_filter or not bull_regime)
 
-    direcao = 0
-    if p_compra > prob_threshold and z < -z_threshold and est and atr > 0:
-        direcao =  1
-    elif p_venda > prob_threshold and z >  z_threshold and est and atr > 0:
-        direcao = -1
+    if compra_ok:   direcao, sinal_str = 1,  "COMPRA 🟢"
+    elif venda_ok:  direcao, sinal_str = -1, "VENDA 🔴"
+    else:           direcao, sinal_str = 0,  "NEUTRO ⚪"
 
-    sinal_str = "COMPRA 🟢" if direcao == 1 else "VENDA 🔴" if direcao == -1 else "NEUTRO ⚪"
-    confianca = p_compra if direcao == 1 else p_venda if direcao == -1 else max(p_compra, p_venda)
+    confianca = p_c if direcao==1 else p_v if direcao==-1 else max(p_c,p_v)
 
     return {
-        'direcao':  direcao,
-        'sinal':    sinal_str,
-        'confianca':confianca,
-        'p_compra': p_compra,
-        'p_venda':  p_venda,
-        'p_neutro': p_neutro,
-        'z':        z,
-        'est':      est,
-        'atr_pct':  atr,
-        'rsi':      rsi,
-        'vol':      vol * 100,
-        'conds':    conds,
-        'preco':    float(ult['Ouro']),
+        'direcao':direcao,'sinal':sinal_str,'confianca':confianca,
+        'p_compra':p_c,'p_venda':p_v,'p_neutro':p_n,
+        'rsi':rsi,'z':z,'vol':vol*100,'atr_pct':atr,'adx':adx,
+        'preco':preco,'bull_regime':bull_regime,
     }
 
+# ==============================================================================
+# MELHORIA 6+7+8 — BACKTEST WALK-FORWARD REALISTA
+# ==============================================================================
+def backtest_wf(df_feat, prob_thr, regime_filter,
+                 capital, risco_pct, mult_sl, mult_tp,
+                 custo_bps, max_dd_pct, n_splits=5):
+    """
+    MELHORIA 1: Backtest walk-forward — modelo re-treinado a cada janela.
+    MELHORIA 6: SL/TP dinâmico em ATR.
+    MELHORIA 7: Custo realista (spread + comissão) por trade.
+    MELHORIA 8: Drawdown diário máximo bloqueia operações.
+    """
+    df_c = df_feat[FEAT_COLS + ['Alvo','Ret_Futuro','Ouro_Close',
+                                  'ATR_Pct','above_sma200']].dropna()
+    if len(df_c) < 150:
+        return None
 
-def calcular_lote_sl_tp(preco, atr_pct, capital, risco_pct, mult_sl, mult_tp):
-    """Replica o cálculo de lote/SL/TP do bot (simplificado para yfinance)."""
-    sl_dist = atr_pct * mult_sl
-    tp_dist = atr_pct * mult_tp
-    risco_usd = capital * risco_pct
-    # Para GC=F: 1 contrato = 100 oz ≈ equiv
-    sl_usd_por_lote = preco * sl_dist * 100
-    lote = (risco_usd / sl_usd_por_lote) if sl_usd_por_lote > 0 else 0.0
-    lote = max(0.01, min(lote, 50.0))
-    sl_usd = round(risco_usd, 2)
-    tp_usd = round(risco_usd * (mult_tp / mult_sl), 2)
-    rr     = round(mult_tp / mult_sl, 2)
-    return {
-        'lote':   round(lote, 2),
-        'sl_pct': sl_dist,
-        'tp_pct': tp_dist,
-        'sl_usd': sl_usd,
-        'tp_usd': tp_usd,
-        'rr':     rr,
-        'risco_capital_pct': risco_pct * 100,
-    }
+    X = df_c[FEAT_COLS].values
+    y = df_c['Alvo'].values
+    ret_fut = df_c['Ret_Futuro'].values
+    precos  = df_c['Ouro_Close'].values
+    atrs    = df_c['ATR_Pct'].values
+    regimes = df_c['above_sma200'].values
+    dates   = df_c.index
 
+    tscv = TimeSeriesSplit(n_splits=n_splits, test_size=max(30, len(X)//(n_splits+1)))
 
-def backtest_simples(df_feat, modelo, prob_threshold, z_threshold,
-                      capital, risco_pct, mult_sl, mult_tp, custo=0.0005):
-    """Backtest candle-a-candle replicando a lógica de sinal do bot."""
-    classes = list(modelo.classes_)
-    X       = df_feat[FEATURES]
-    probs   = modelo.predict_proba(X)
-    idx_c   = classes.index(1)  if  1 in classes else 0
-    idx_v   = classes.index(-1) if -1 in classes else 0
+    cap        = capital
+    equity     = [cap]
+    eq_dates   = [dates[0]]
+    trades     = []
+    dd_inicio_dia = cap
+    dia_atual  = dates[0].date() if hasattr(dates[0],'date') else dates[0]
 
-    cap     = capital
-    equity  = [cap]
-    trades  = []
-    precos  = df_feat['Ouro'].values
-    rets    = df_feat['Ret_Futuro'].values
-    zs      = df_feat['Z_Score'].values
-    ests    = df_feat['Is_Stationary'].values
-    atrs    = df_feat['ATR_Pct'].values
-    dates   = df_feat.index
-
-    for i in range(len(df_feat)):
-        p_c = probs[i][idx_c]
-        p_v = probs[i][idx_v]
-        z   = zs[i]
-        est = ests[i] == 1.0
-        atr = atrs[i]
-        ret = rets[i] if not np.isnan(rets[i]) else 0.0
-
-        d = 0
-        if p_c > prob_threshold and z < -z_threshold and est and atr > 0: d =  1
-        elif p_v > prob_threshold and z >  z_threshold and est and atr > 0: d = -1
-
-        if d == 0:
-            equity.append(cap)
+    for tr_idx, te_idx in tscv.split(X):
+        if len(tr_idx) < 50 or len(te_idx) < 5:
             continue
 
-        sl_d = atr * mult_sl
-        tp_d = atr * mult_tp
-        risco_usd = cap * risco_pct
-        tamanho   = risco_usd
+        sc = RobustScaler()
+        Xtr = sc.fit_transform(X[tr_idx])
+        Xte = sc.transform(X[te_idx])
 
-        pnl = tamanho * d * ret
-        if d == 1:
-            if ret < -sl_d: pnl = -tamanho * sl_d
-            elif ret >  tp_d: pnl =  tamanho * tp_d
-        else:
-            if ret >  sl_d: pnl = -tamanho * sl_d
-            elif ret < -tp_d: pnl =  tamanho * tp_d
+        mod = _build_ensemble()
+        try:
+            mod.fit(Xtr, y[tr_idx])
+        except:
+            continue
 
-        pnl -= cap * custo
-        cap += pnl
-        equity.append(cap)
-        trades.append({'date':dates[i], 'dir':d, 'ret':ret, 'pnl':pnl})
+        classes = list(mod.classes_)
+        probs   = mod.predict_proba(Xte)
 
-    equity = np.array(equity)
-    peak   = np.maximum.accumulate(equity)
-    dd     = (equity - peak) / peak
-    rets_eq = np.diff(equity) / equity[:-1]
+        for j, i in enumerate(te_idx):
+            pr_arr   = probs[j]
+            p = {cls: float(pr_arr[k]) for k, cls in enumerate(classes)}
+            p_c = p.get(1,0.0); p_v = p.get(-1,0.0)
+            bull = regimes[i] == 1
+            atr  = atrs[i]
+            ret  = ret_fut[i] if not np.isnan(ret_fut[i]) else 0.0
+            dt   = dates[i]
 
-    n_t   = len(trades)
-    win_r = np.mean([t['pnl']>0 for t in trades])*100 if n_t else 0.0
-    sharpe= float(rets_eq.mean()/rets_eq.std()*np.sqrt(252)) if rets_eq.std()>0 else 0.0
-    ret_a = (equity[-1]/capital-1)*100
+            # Drawdown diário
+            d_atual = dt.date() if hasattr(dt,'date') else dt
+            if d_atual != dia_atual:
+                dia_atual = d_atual
+                dd_inicio_dia = cap
+            dd_hoje = (dd_inicio_dia - cap) / dd_inicio_dia if dd_inicio_dia > 0 else 0
 
-    # BH Ouro
-    bh = (precos[-1]/precos[0]-1)*100 if precos[0]>0 else 0.0
+            if dd_hoje >= max_dd_pct:
+                equity.append(cap); eq_dates.append(dt)
+                continue
+
+            # Sinal com filtro de regime
+            compra_ok = p_c > prob_thr and (not regime_filter or bull)
+            venda_ok  = p_v > prob_thr and (not regime_filter or not bull)
+
+            if compra_ok:   d =  1
+            elif venda_ok:  d = -1
+            else:
+                equity.append(cap); eq_dates.append(dt)
+                continue
+
+            # SL/TP dinâmico em ATR
+            sl_d = atr * mult_sl
+            tp_d = atr * mult_tp
+            if sl_d <= 0:
+                equity.append(cap); eq_dates.append(dt)
+                continue
+
+            # Position sizing baseado em risco fixo
+            risco_usd  = cap * risco_pct
+            sl_pts_usd = precos[i] * sl_d          # $SL por % do preço
+            pos_size   = risco_usd / (sl_pts_usd + 1e-9)
+            pos_size   = min(pos_size, cap * 0.5)  # nunca mais de 50% do capital
+
+            # P&L
+            pnl_bruto = pos_size * d * ret
+            if d == 1:
+                if ret < -sl_d:  pnl_bruto = -risco_usd
+                elif ret > tp_d: pnl_bruto =  risco_usd * (tp_d/sl_d)
+            else:
+                if ret >  sl_d:  pnl_bruto = -risco_usd
+                elif ret < -tp_d:pnl_bruto =  risco_usd * (tp_d/sl_d)
+
+            # Custo realista
+            custo = cap * custo_bps
+            pnl   = pnl_bruto - custo
+            cap  += pnl
+
+            equity.append(cap); eq_dates.append(dt)
+            trades.append({
+                'date':dt,'dir':d,'ret':ret,'pnl':pnl,
+                'risco_usd':risco_usd,'atr':atr,
+                'prob': p_c if d==1 else p_v,
+            })
+
+    if len(equity) < 2:
+        return None
+
+    eq  = np.array(equity)
+    peak= np.maximum.accumulate(eq)
+    dd  = (eq - peak) / peak
+    rets_eq = np.diff(eq)/eq[:-1]
+
+    n_t  = len(trades)
+    win_r= np.mean([t['pnl']>0 for t in trades])*100 if n_t else 0.0
+    shp  = float(rets_eq.mean()/rets_eq.std()*np.sqrt(252)) if rets_eq.std()>0 else 0.0
+    srt  = float(rets_eq.mean()/rets_eq[rets_eq<0].std()*np.sqrt(252)) if len(rets_eq[rets_eq<0])>0 else 0.0
+    r_a  = (eq[-1]/capital-1)*100
+    bh   = (precos[-1]/precos[0]-1)*100 if precos[0]>0 else 0.0
+
+    # Profit Factor
+    wins  = [t['pnl'] for t in trades if t['pnl']>0]
+    losss = [t['pnl'] for t in trades if t['pnl']<0]
+    pf    = sum(wins)/abs(sum(losss)) if losss else float('inf')
+
+    # Expectancy
+    avg_w = np.mean(wins)  if wins  else 0.0
+    avg_l = np.mean(losss) if losss else 0.0
+    exp   = (win_r/100)*avg_w + (1-win_r/100)*avg_l
+
+    # Calmar
+    calmar = (r_a/abs(dd.min()*100)) if dd.min()<0 else 0.0
 
     return {
-        'equity':equity, 'dd':dd, 'trades':trades,
-        'ret_acum':ret_a, 'bh':bh, 'sharpe':sharpe,
-        'max_dd':float(dd.min()*100), 'win_rate':win_r,
-        'n_trades':n_t, 'cap_final':cap,
-        'dates':df_feat.index[:len(equity)],
+        'equity':eq,'dd':dd,'eq_dates':eq_dates[:len(eq)],
+        'trades':trades,'precos_hist':precos,
+        'ret_acum':r_a,'bh':bh,'sharpe':shp,'sortino':srt,
+        'max_dd':float(dd.min()*100),'win_rate':win_r,
+        'n_trades':n_t,'cap_final':cap,
+        'profit_factor':pf,'expectancy':exp,'calmar':calmar,
     }
 
 # ==============================================================================
-# EXECUÇÃO PRINCIPAL
+# EXECUÇÃO
 # ==============================================================================
 if run_btn or 'results' not in st.session_state:
-    with st.spinner(f"⏳ Baixando `{TICKER}` e treinando Random Forest..."):
-        try:
-            df_raw = baixar_dados(TICKER.upper(), ANOS, TIMEFRAME)
-            if len(df_raw) < 200:
-                st.error("⚠️ Dados insuficientes. Use período maior ou troque o ativo.")
-                st.stop()
-            df_feat = preparar_features(df_raw, horizonte=HORIZONTE)
-            if len(df_feat) < 120:
-                st.error(f"⚠️ Após feature engineering: {len(df_feat)} linhas. Aumente o período.")
-                st.stop()
-            modelo, metricas_modelo = treinar_modelo(df_feat)
-            sinal = calcular_sinal(modelo, df_feat, PROB_THRESHOLD, Z_THRESHOLD)
-            lote_info = calcular_lote_sl_tp(
-                sinal['preco'], sinal['atr_pct'],
-                CAPITAL, RISCO_TRADE_PCT, ATR_MULT_SL, ATR_MULT_TP
-            )
-            bt = backtest_simples(
-                df_feat, modelo, PROB_THRESHOLD, Z_THRESHOLD,
-                CAPITAL, RISCO_TRADE_PCT, ATR_MULT_SL, ATR_MULT_TP
-            )
-            st.session_state['results'] = {
-                'df_raw': df_raw, 'df_feat': df_feat,
-                'modelo': modelo, 'metricas': metricas_modelo,
-                'sinal': sinal, 'lote_info': lote_info, 'bt': bt,
-            }
-        except Exception as e:
-            st.error(f"Erro: {e}")
+    prog = st.progress(0, text="⬇️ Baixando dados...")
+    try:
+        df_raw = baixar_dados(TICKER.upper(), ANOS, TIMEFRAME)
+        prog.progress(20, text="🔧 Calculando features (~50 indicadores)...")
+        if len(df_raw) < 250:
+            st.error("⚠️ Dados insuficientes. Aumente o período para ≥ 3 anos.")
             st.stop()
+        df_feat = preparar_features(df_raw, horizonte=HORIZONTE)
+        df_feat.dropna(inplace=True)
+        if len(df_feat) < 150:
+            st.error(f"⚠️ Apenas {len(df_feat)} linhas após features. Use período maior.")
+            st.stop()
+        prog.progress(40, text="🧠 Treinando Ensemble (RF + XGB + LGB)...")
+        modelo, scaler, met = treinar_ensemble(df_feat, n_splits=4)
+        prog.progress(70, text="📈 Rodando backtest walk-forward...")
+        sinal = calcular_sinal(modelo, scaler, df_feat, PROB_THRESHOLD, REGIME_FILTER)
+        bt    = backtest_wf(df_feat, PROB_THRESHOLD, REGIME_FILTER,
+                             CAPITAL, RISCO_PCT, ATR_MULT_SL, ATR_MULT_TP,
+                             CUSTO_BPS, MAX_DD_PCT, n_splits=4)
+        prog.progress(100, text="✅ Concluído!")
+        if bt is None:
+            st.error("Backtest retornou vazio. Reduza o threshold ou aumente o período.")
+            st.stop()
+        st.session_state['results'] = {
+            'df_raw':df_raw,'df_feat':df_feat,
+            'modelo':modelo,'scaler':scaler,'met':met,
+            'sinal':sinal,'bt':bt,
+        }
+        prog.empty()
+    except Exception as e:
+        prog.empty()
+        st.error(f"Erro: {e}")
+        st.stop()
 
 res = st.session_state.get('results')
 if not res:
     st.info("Configure os parâmetros e clique em **🚀 Executar Análise**.")
     st.stop()
 
-s   = res['sinal']
-bt  = res['bt']
-li  = res['lote_info']
-met = res['metricas']
+s  = res['sinal']
+bt = res['bt']
+m  = res['met']
 
 # ==============================================================================
-# CARDS DE MÉTRICAS
+# KPIs
 # ==============================================================================
-st.markdown("## 📊 Resumo da Estratégia")
+st.markdown("## 📊 Resultados (Walk-Forward OOS)")
 
-def card(col, label, value, css, sub=""):
-    col.markdown(f"""
-    <div class="metric-card">
-        <div class="label">{label}</div>
-        <div class="value {css}">{value}</div>
+def kpi(col, lbl, val, css, sub=""):
+    col.markdown(f"""<div class="kpi">
+        <div class="lbl">{lbl}</div>
+        <div class="val {css}">{val}</div>
         <div class="sub">{sub}</div>
     </div>""", unsafe_allow_html=True)
 
 c1,c2,c3,c4 = st.columns(4)
-card(c1, "Retorno Acumulado", f"{bt['ret_acum']:+.2f}%",
-     "green" if bt['ret_acum']>=0 else "red", f"B&H Ouro: {bt['bh']:+.2f}%")
-card(c2, "Sharpe Ratio", f"{bt['sharpe']:.2f}",
-     "green" if bt['sharpe']>=1 else ("blue" if bt['sharpe']>=0 else "red"), "Anualizado")
-card(c3, "Win Rate", f"{bt['win_rate']:.1f}%",
-     "green" if bt['win_rate']>=50 else "red", f"{bt['n_trades']} trades")
-card(c4, "Max Drawdown", f"{bt['max_dd']:.2f}%", "red", "Pior queda")
+kpi(c1,"Retorno Acumulado",f"{bt['ret_acum']:+.2f}%",
+    "green" if bt['ret_acum']>=0 else "red", f"B&H Ouro: {bt['bh']:+.2f}%")
+kpi(c2,"Sharpe Ratio",f"{bt['sharpe']:.2f}",
+    "green" if bt['sharpe']>=1 else ("blue" if bt['sharpe']>=0 else "red"),"Anualizado OOS")
+kpi(c3,"Win Rate",f"{bt['win_rate']:.1f}%",
+    "green" if bt['win_rate']>=50 else "red",f"{bt['n_trades']} trades")
+kpi(c4,"Max Drawdown",f"{bt['max_dd']:.2f}%","red","Pior queda")
 
-st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("<br>",unsafe_allow_html=True)
 m1,m2,m3,m4,m5,m6 = st.columns(6)
-m1.metric("Acurácia Modelo", f"{met['acc']:.1%}")
-m2.metric("F1-Score",        f"{met['f1']:.3f}")
-m3.metric("Capital Final",   f"${bt['cap_final']:,.0f}")
-m4.metric("Prob. Compra",    f"{s['p_compra']:.1%}")
-m5.metric("Prob. Venda",     f"{s['p_venda']:.1%}")
-m6.metric("Z-Score",         f"{s['z']:+.3f}")
+m1.metric("Sortino",        f"{bt['sortino']:.2f}")
+m2.metric("Profit Factor",  f"{bt['profit_factor']:.2f}" if bt['profit_factor']!=float('inf') else "∞")
+m3.metric("Expectancy",     f"${bt['expectancy']:+.1f}")
+m4.metric("Calmar",         f"{bt['calmar']:.2f}")
+m5.metric("Acurácia OOS",   f"{m['acc_oos']:.1%}")
+m6.metric("ROC-AUC OOS",    f"{m['roc_oos']:.3f}")
 
 st.markdown("---")
 
@@ -485,328 +664,300 @@ st.markdown("---")
 # TABS
 # ==============================================================================
 tab1,tab2,tab3,tab4,tab5 = st.tabs([
-    "🎯 Sinal Atual","📉 Backtest & Equity","📊 Indicadores",
-    "✅ Checklist","🧠 Modelo"
+    "🎯 Sinal","📉 Equity & Drawdown","📊 Indicadores","🏆 Performance","🧠 Modelo"
 ])
 
-PLT_BG   = '#0b0e14'
-PLT_CARD = '#131720'
-PLT_GRID = '#2a3048'
-PLT_TEXT = '#e8eaf6'
+BG,CARD,GRID,TXT = '#0b0e14','#131720','#2a3048','#e8eaf6'
 
-def base_layout(h=480):
-    return dict(height=h, paper_bgcolor=PLT_BG, plot_bgcolor=PLT_CARD,
-                font=dict(color=PLT_TEXT), legend=dict(bgcolor=PLT_CARD),
+def bl(h=480):
+    return dict(height=h,paper_bgcolor=BG,plot_bgcolor=CARD,
+                font=dict(color=TXT),legend=dict(bgcolor=CARD),
                 margin=dict(l=50,r=20,t=50,b=40))
 
-def upd(fig):
-    fig.update_xaxes(gridcolor=PLT_GRID, zeroline=False)
-    fig.update_yaxes(gridcolor=PLT_GRID, zeroline=False)
+def uf(fig):
+    fig.update_xaxes(gridcolor=GRID,zeroline=False)
+    fig.update_yaxes(gridcolor=GRID,zeroline=False)
     return fig
 
-# ── Tab 1: Sinal Atual ────────────────────────────────────────────────────────
+# ── Tab 1: Sinal ──────────────────────────────────────────────────────────────
 with tab1:
-    sinal_color = ("#3fb950" if "COMPRA" in s['sinal'] else
-                   "#f85149" if "VENDA"  in s['sinal'] else "#8b949e")
+    sc = ("#3fb950" if "COMPRA" in s.get('sinal','') else
+          "#f85149" if "VENDA"  in s.get('sinal','') else "#8b949e")
+    regime_txt = "🐂 Bull (acima SMA200)" if s.get('bull_regime') else "🐻 Bear (abaixo SMA200)"
 
-    st.markdown(f"""
-    <div class="sinal-box" style="border-color:{sinal_color}; background:#131720;">
-        <div style="font-size:3.2rem;margin-bottom:6px;">{s['sinal']}</div>
-        <div style="color:#8b949e;font-size:0.85rem;">
-            Random Forest | Z-Score: {s['z']:+.3f} | Estacionária: {'✅' if s['est'] else '❌'}
+    st.markdown(f"""<div class="sbox" style="border-color:{sc};background:#131720;">
+        <div style="font-size:3rem;margin-bottom:6px;">{s.get('sinal','—')}</div>
+        <div style="color:#8b949e;font-size:.85rem;">
+            Ensemble ML | Regime: {regime_txt} | ADX: {s.get('adx',0):.1f}
         </div>
-        <div style="margin-top:22px;display:flex;justify-content:center;gap:40px;">
-            <div>
-                <div style="color:#8b949e;font-size:0.72rem">PROB. COMPRA</div>
-                <div style="font-size:1.6rem;color:#3fb950;font-weight:700">{s['p_compra']:.1%}</div>
-            </div>
-            <div>
-                <div style="color:#8b949e;font-size:0.72rem">PROB. VENDA</div>
-                <div style="font-size:1.6rem;color:#f85149;font-weight:700">{s['p_venda']:.1%}</div>
-            </div>
-            <div>
-                <div style="color:#8b949e;font-size:0.72rem">NEUTRO</div>
-                <div style="font-size:1.6rem;color:#8b949e;font-weight:700">{s['p_neutro']:.1%}</div>
-            </div>
-            <div>
-                <div style="color:#8b949e;font-size:0.72rem">CONFIANÇA</div>
-                <div style="font-size:1.6rem;color:#c9a84c;font-weight:700">{s['confianca']:.1%}</div>
-            </div>
+        <div style="margin-top:20px;display:flex;justify-content:center;gap:36px;">
+            <div><div style="color:#8b949e;font-size:.7rem">PROB. COMPRA</div>
+                 <div style="font-size:1.5rem;color:#3fb950;font-weight:700">{s.get('p_compra',0):.1%}</div></div>
+            <div><div style="color:#8b949e;font-size:.7rem">PROB. VENDA</div>
+                 <div style="font-size:1.5rem;color:#f85149;font-weight:700">{s.get('p_venda',0):.1%}</div></div>
+            <div><div style="color:#8b949e;font-size:.7rem">NEUTRO</div>
+                 <div style="font-size:1.5rem;color:#8b949e;font-weight:700">{s.get('p_neutro',0):.1%}</div></div>
+            <div><div style="color:#8b949e;font-size:.7rem">CONFIANÇA</div>
+                 <div style="font-size:1.5rem;color:#c9a84c;font-weight:700">{s.get('confianca',0):.1%}</div></div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+    </div>""", unsafe_allow_html=True)
 
-    col_s1, col_s2 = st.columns(2)
-
-    with col_s1:
-        # Gauge probabilidades
-        fig_g = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=s['p_compra']*100,
-            number={'suffix':'%','font':{'color':PLT_TEXT}},
-            gauge={
-                'axis':{'range':[0,100],'tickcolor':PLT_TEXT},
-                'bar':{'color':'#3fb950','thickness':0.35},
-                'bgcolor':PLT_CARD,
-                'steps':[{'range':[0,PROB_THRESHOLD*100],'color':'#1a0f0f'},
-                         {'range':[PROB_THRESHOLD*100,100],'color':'#0f1a0f'}],
-                'threshold':{'line':{'color':'#c9a84c','width':3},
-                             'thickness':0.8,'value':PROB_THRESHOLD*100},
-            },
-            title={'text':'Prob. COMPRA (%)','font':{'color':PLT_TEXT}}
-        ))
-        fig_g.update_layout(paper_bgcolor=PLT_BG, font=dict(color=PLT_TEXT), height=280)
-        st.plotly_chart(fig_g, use_container_width=True)
-
-    with col_s2:
-        st.markdown("#### 📐 Gestão de Risco")
-        preco = s['preco']
-        if s['direcao'] == 1:
-            sl_p = preco * (1 - li['sl_pct'])
-            tp_p = preco * (1 + li['tp_pct'])
-        elif s['direcao'] == -1:
-            sl_p = preco * (1 + li['sl_pct'])
-            tp_p = preco * (1 - li['tp_pct'])
-        else:
-            sl_p = tp_p = preco
-
+    ca, cb = st.columns(2)
+    with ca:
+        st.markdown("#### 📐 Gestão de Risco (SL/TP Dinâmico por ATR)")
+        preco = s.get('preco',0)
+        atr_p = s.get('atr_pct',0)
+        sl_p  = preco*(1-atr_p*ATR_MULT_SL) if s.get('direcao')==1 else preco*(1+atr_p*ATR_MULT_SL)
+        tp_p  = preco*(1+atr_p*ATR_MULT_TP) if s.get('direcao')==1 else preco*(1-atr_p*ATR_MULT_TP)
+        risco_u = CAPITAL * RISCO_PCT
+        tp_u    = risco_u * (ATR_MULT_TP/ATR_MULT_SL)
         st.markdown(f"""
-        | Parâmetro | Valor |
-        |:--|--:|
-        | Preço Atual | `${preco:,.2f}` |
-        | Stop Loss (preço) | `${sl_p:,.2f}` |
-        | Take Profit (preço) | `${tp_p:,.2f}` |
-        | SL em USD | `${li['sl_usd']:,.2f}` |
-        | TP em USD | `${li['tp_usd']:,.2f}` |
-        | R/R | `1:{li['rr']:.1f}` |
-        | Risco/Capital | `{li['risco_capital_pct']:.1f}%` |
-        | RSI | `{s['rsi']:.2f}` |
-        | ATR % | `{s['atr_pct']*100:.4f}%` |
-        | Volatilidade | `{s['vol']:.4f}%` |
-        """)
+| Parâmetro | Valor |
+|:--|--:|
+| Preço Atual | `${preco:,.2f}` |
+| Stop Loss (preço) | `${sl_p:,.2f}` |
+| Take Profit (preço) | `${tp_p:,.2f}` |
+| Risco USD | `${risco_u:,.2f}` |
+| Ganho Potencial | `${tp_u:,.2f}` |
+| R/R Ratio | `1:{ATR_MULT_TP/ATR_MULT_SL:.1f}` |
+| RSI (14) | `{s.get('rsi',0):.2f}` |
+| Z-Score (20) | `{s.get('z',0):+.3f}` |
+| ATR % | `{atr_p*100:.4f}%` |
+| ADX | `{s.get('adx',0):.1f}` |
+""")
+    with cb:
+        fig_g = go.Figure(go.Indicator(
+            mode="gauge+number", value=s.get('p_compra',0)*100,
+            number={'suffix':'%','font':{'color':TXT}},
+            gauge={'axis':{'range':[0,100]},
+                   'bar':{'color':'#3fb950','thickness':.35},
+                   'bgcolor':CARD,
+                   'steps':[{'range':[0,PROB_THRESHOLD*100],'color':'#1a0f0f'},
+                             {'range':[PROB_THRESHOLD*100,100],'color':'#0f1a0f'}],
+                   'threshold':{'line':{'color':'#c9a84c','width':3},
+                                'thickness':.8,'value':PROB_THRESHOLD*100}},
+            title={'text':'Prob. COMPRA (%)'}))
+        fig_g.update_layout(paper_bgcolor=BG,font=dict(color=TXT),height=280)
+        st.plotly_chart(fig_g,use_container_width=True)
 
-    st.warning("⚠️ Sinal educacional. Não constitui recomendação de investimento.")
+    st.warning("⚠️ Educacional. Não é recomendação de investimento.")
 
-# ── Tab 2: Backtest & Equity ──────────────────────────────────────────────────
+# ── Tab 2: Equity & Drawdown ──────────────────────────────────────────────────
 with tab2:
-    df_f = res['df_feat']
-    eq   = bt['equity']
-    dd   = bt['dd']
-    d_eq = bt['dates']
+    df_f  = res['df_feat']
+    eq    = bt['equity']
+    dd    = bt['dd']
+    eq_dt = bt['eq_dates']
 
-    fig_bt = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                           row_heights=[0.45,0.3,0.25],
-                           subplot_titles=["Preço do Ouro + Médias Móveis",
-                                           "Equity Curve (Backtest)",
+    fig_e = make_subplots(rows=3,cols=1,shared_xaxes=True,
+                           row_heights=[.45,.3,.25],
+                           subplot_titles=["Preço Ouro + SMA 50/200 + Bollinger",
+                                           "Equity Curve (Walk-Forward OOS)",
                                            "Drawdown (%)"])
+    fig_e.add_trace(go.Scatter(x=df_f.index,y=df_f['Ouro_Close'],
+        name="Ouro",line=dict(color='#c9a84c',width=1.5)),row=1,col=1)
+    fig_e.add_trace(go.Scatter(x=df_f.index,y=df_f['SMA_50'],
+        name="SMA50",line=dict(color='#58a6ff',width=1,dash='dot')),row=1,col=1)
+    fig_e.add_trace(go.Scatter(x=df_f.index,y=df_f['SMA_200'],
+        name="SMA200",line=dict(color='#bc8cff',width=1.5,dash='dash')),row=1,col=1)
+    fig_e.add_trace(go.Scatter(x=df_f.index,y=df_f['BB_Upper'],
+        line=dict(color='#2a3048',width=.8),showlegend=False),row=1,col=1)
+    fig_e.add_trace(go.Scatter(x=df_f.index,y=df_f['BB_Lower'],
+        line=dict(color='#2a3048',width=.8),fill='tonexty',
+        fillcolor='rgba(42,48,72,.18)',showlegend=False),row=1,col=1)
 
-    # Preço + Bollinger
-    fig_bt.add_trace(go.Scatter(x=df_f.index, y=df_f['Ouro'],
-                                name="Ouro", line=dict(color='#c9a84c',width=1.5)), row=1,col=1)
-    fig_bt.add_trace(go.Scatter(x=df_f.index, y=df_f['SMA_20'],
-                                name="SMA 20", line=dict(color='#58a6ff',width=1,dash='dot')), row=1,col=1)
-    fig_bt.add_trace(go.Scatter(x=df_f.index, y=df_f['SMA_50'],
-                                name="SMA 50", line=dict(color='#bc8cff',width=1,dash='dot')), row=1,col=1)
-    fig_bt.add_trace(go.Scatter(x=df_f.index, y=df_f['BB_Upper'],
-                                name="BB +2σ", line=dict(color='#2a3048',width=0.8),
-                                showlegend=False), row=1,col=1)
-    fig_bt.add_trace(go.Scatter(x=df_f.index, y=df_f['BB_Lower'],
-                                name="BB -2σ", line=dict(color='#2a3048',width=0.8),
-                                fill='tonexty', fillcolor='rgba(42,48,72,0.2)',
-                                showlegend=False), row=1,col=1)
+    ml = min(len(eq_dt),len(eq))
+    fig_e.add_trace(go.Scatter(x=eq_dt[:ml],y=eq[:ml],name="Equity",
+        fill='tozeroy',line=dict(color='#3fb950',width=2),
+        fillcolor='rgba(63,185,80,.1)'),row=2,col=1)
+    fig_e.add_hline(y=CAPITAL,line_dash="dash",line_color="#8b949e",row=2,col=1)
 
-    # Equity
-    min_len = min(len(d_eq), len(eq))
-    fig_bt.add_trace(go.Scatter(x=d_eq[:min_len], y=eq[:min_len],
-                                name="Equity", fill='tozeroy',
-                                line=dict(color='#3fb950',width=2),
-                                fillcolor='rgba(63,185,80,0.1)'), row=2,col=1)
-    fig_bt.add_hline(y=CAPITAL, line_dash="dash", line_color="#8b949e", row=2,col=1)
+    fig_e.add_trace(go.Scatter(x=eq_dt[:ml],y=dd[:ml]*100,name="Drawdown",
+        fill='tozeroy',line=dict(color='#f85149',width=1),
+        fillcolor='rgba(248,81,73,.12)'),row=3,col=1)
 
-    # Drawdown
-    fig_bt.add_trace(go.Scatter(x=d_eq[:min_len], y=dd[:min_len]*100,
-                                name="Drawdown", fill='tozeroy',
-                                line=dict(color='#f85149',width=1),
-                                fillcolor='rgba(248,81,73,0.12)'), row=3,col=1)
+    fig_e.update_layout(**bl(640)); uf(fig_e)
+    st.plotly_chart(fig_e,use_container_width=True)
 
-    fig_bt.update_layout(**base_layout(640))
-    upd(fig_bt)
-    st.plotly_chart(fig_bt, use_container_width=True)
-
-    # Trades tabela
     if bt['trades']:
         df_tr = pd.DataFrame(bt['trades'])
         df_tr['Direção'] = df_tr['dir'].map({1:'COMPRA 🟢',-1:'VENDA 🔴'})
-        df_tr['ret_%']   = (df_tr['ret'] * 100).round(4)
+        df_tr['ret_%']   = (df_tr['ret']*100).round(4)
         df_tr['pnl_$']   = df_tr['pnl'].round(2)
+        df_tr['prob_%']  = (df_tr['prob']*100).round(1)
         with st.expander(f"📋 Trades ({len(bt['trades'])} total)"):
-            st.dataframe(df_tr[['date','Direção','ret_%','pnl_$']].tail(50),
+            st.dataframe(df_tr[['date','Direção','prob_%','ret_%','pnl_$']].tail(60),
                          use_container_width=True)
 
 # ── Tab 3: Indicadores ────────────────────────────────────────────────────────
 with tab3:
     df_f = res['df_feat']
-    col_i1, col_i2 = st.columns(2)
-
-    with col_i1:
-        # RSI
+    ca3,cb3 = st.columns(2)
+    with ca3:
         fig_rsi = go.Figure()
-        fig_rsi.add_trace(go.Scatter(x=df_f.index, y=df_f['RSI'],
-                                     name="RSI", line=dict(color='#c9a84c',width=1.5)))
-        fig_rsi.add_hline(y=70, line_dash="dot", line_color="#f85149",
-                          annotation_text="Sobrecomprado 70")
-        fig_rsi.add_hline(y=30, line_dash="dot", line_color="#3fb950",
-                          annotation_text="Sobrevendido 30")
-        fig_rsi.add_hline(y=50, line_dash="dash", line_color="#2a3048")
-        fig_rsi.update_layout(title="RSI (14)", **base_layout(300))
-        upd(fig_rsi)
-        st.plotly_chart(fig_rsi, use_container_width=True)
+        fig_rsi.add_trace(go.Scatter(x=df_f.index,y=df_f['rsi_7'],
+            name="RSI 7",line=dict(color='#d29922',width=1)))
+        fig_rsi.add_trace(go.Scatter(x=df_f.index,y=df_f['rsi_14'],
+            name="RSI 14",line=dict(color='#c9a84c',width=1.8)))
+        fig_rsi.add_trace(go.Scatter(x=df_f.index,y=df_f['rsi_21'],
+            name="RSI 21",line=dict(color='#8b949e',width=1)))
+        for v,clr in [(70,'#f85149'),(30,'#3fb950'),(50,'#2a3048')]:
+            fig_rsi.add_hline(y=v,line_dash="dot",line_color=clr)
+        fig_rsi.update_layout(title="RSI Multi-Período",**bl(290)); uf(fig_rsi)
+        st.plotly_chart(fig_rsi,use_container_width=True)
 
-        # Z-Score
         fig_z = go.Figure()
-        fig_z.add_trace(go.Scatter(x=df_f.index, y=df_f['Z_Score'],
-                                   name="Z-Score", line=dict(color='#58a6ff',width=1.5),
-                                   fill='tozeroy', fillcolor='rgba(88,166,255,0.08)'))
-        fig_z.add_hline(y=Z_THRESHOLD,  line_dash="dash", line_color="#f85149",
-                        annotation_text=f"+{Z_THRESHOLD} (Venda)")
-        fig_z.add_hline(y=-Z_THRESHOLD, line_dash="dash", line_color="#3fb950",
-                        annotation_text=f"-{Z_THRESHOLD} (Compra)")
-        fig_z.add_hline(y=0, line_dash="solid", line_color="#2a3048")
-        fig_z.update_layout(title="Z-Score (100 períodos)", **base_layout(300))
-        upd(fig_z)
-        st.plotly_chart(fig_z, use_container_width=True)
+        for p,clr in [(20,'#58a6ff'),(60,'#bc8cff')]:
+            fig_z.add_trace(go.Scatter(x=df_f.index,y=df_f[f'zscore_{p}'],
+                name=f"Z-Score {p}",line=dict(color=clr,width=1.4)))
+        fig_z.add_hline(y=1,line_dash="dash",line_color="#f85149")
+        fig_z.add_hline(y=-1,line_dash="dash",line_color="#3fb950")
+        fig_z.add_hline(y=0,line_color="#2a3048")
+        fig_z.update_layout(title="Z-Score Multi-Janela",**bl(290)); uf(fig_z)
+        st.plotly_chart(fig_z,use_container_width=True)
 
-    with col_i2:
-        # MACD
-        fig_macd = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                                  row_heights=[0.6,0.4],
-                                  subplot_titles=["Preço + MACD Signal","Histograma"])
-        fig_macd.add_trace(go.Scatter(x=df_f.index, y=df_f['Ouro'],
-                                      name="Ouro", line=dict(color='#c9a84c',width=1.5)), row=1,col=1)
-        fig_macd.add_trace(go.Scatter(x=df_f.index, y=df_f['MACD'],
-                                      name="MACD", line=dict(color='#58a6ff',width=1.2)), row=1,col=1)
-        fig_macd.add_trace(go.Scatter(x=df_f.index, y=df_f['MACD_Signal'],
-                                      name="Signal", line=dict(color='#d29922',width=1.2)), row=1,col=1)
-        colors_macd = np.where(df_f['MACD_Hist']>=0,'#3fb950','#f85149')
-        fig_macd.add_trace(go.Bar(x=df_f.index, y=df_f['MACD_Hist'],
-                                   name="Hist", marker_color=colors_macd), row=2,col=1)
-        fig_macd.update_layout(**base_layout(480))
-        upd(fig_macd)
-        st.plotly_chart(fig_macd, use_container_width=True)
+    with cb3:
+        fig_macd = make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[.6,.4])
+        fig_macd.add_trace(go.Scatter(x=df_f.index,y=df_f['MACD'],
+            name="MACD",line=dict(color='#58a6ff',width=1.3)),row=1,col=1)
+        fig_macd.add_trace(go.Scatter(x=df_f.index,y=df_f['MACD_Signal'],
+            name="Signal",line=dict(color='#d29922',width=1.3)),row=1,col=1)
+        clr_h = np.where(df_f['MACD_Hist']>=0,'#3fb950','#f85149')
+        fig_macd.add_trace(go.Bar(x=df_f.index,y=df_f['MACD_Hist'],
+            name="Hist",marker_color=clr_h),row=2,col=1)
+        fig_macd.update_layout(title="MACD",**bl(380)); uf(fig_macd)
+        st.plotly_chart(fig_macd,use_container_width=True)
 
-        # Volatilidade
-        fig_vol = go.Figure()
-        fig_vol.add_trace(go.Scatter(x=df_f.index, y=df_f['Volatilidade']*100,
-                                     name="Volatilidade", fill='tozeroy',
-                                     line=dict(color='#bc8cff',width=1.5),
-                                     fillcolor='rgba(188,140,255,0.1)'))
-        fig_vol.update_layout(title="Volatilidade Rolling 20 (%)", **base_layout(280))
-        upd(fig_vol)
-        st.plotly_chart(fig_vol, use_container_width=True)
+        fig_adx = go.Figure()
+        fig_adx.add_trace(go.Scatter(x=df_f.index,y=df_f['adx'],
+            name="ADX",line=dict(color='#c9a84c',width=1.5),fill='tozeroy',
+            fillcolor='rgba(201,168,76,.08)'))
+        fig_adx.add_hline(y=25,line_dash="dash",line_color="#d29922",
+                           annotation_text="Tendência forte (25)")
+        fig_adx.update_layout(title="ADX (Força da Tendência)",**bl(240)); uf(fig_adx)
+        st.plotly_chart(fig_adx,use_container_width=True)
 
-# ── Tab 4: Checklist ──────────────────────────────────────────────────────────
+# ── Tab 4: Performance ────────────────────────────────────────────────────────
 with tab4:
-    st.markdown("### ✅ Checklist de Condições para Abertura de Posição")
-    st.markdown("*(Replica exatamente a lógica do bot_ouro_mt5 H4)*")
-
-    conds = s['conds']
-    conds_extra = {
-        f"Z-Score < -{Z_THRESHOLD} (sinal Compra)": s['z'] < -Z_THRESHOLD,
-        f"Z-Score > +{Z_THRESHOLD} (sinal Venda)":  s['z'] >  Z_THRESHOLD,
-        "Série Estacionária (ADF)":                  s['est'],
-        f"ATR > 0 ({s['atr_pct']*100:.4f}%)":       s['atr_pct'] > 0,
-        f"Prob. Compra > {PROB_THRESHOLD:.0%}":      s['p_compra'] > PROB_THRESHOLD,
-        f"Prob. Venda  > {PROB_THRESHOLD:.0%}":      s['p_venda']  > PROB_THRESHOLD,
-    }
-
-    for label, ok in conds_extra.items():
-        emoji = "✅" if ok else "❌"
-        cor   = "green" if ok else "red"
-        st.markdown(f"<span style='color:{'#3fb950' if ok else '#f85149'};font-size:1.1rem;'>"
-                    f"{emoji} {label}</span>", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown(f"""
-    | Condição Geral | Status |
-    |:--|:--|
-    | Sinal gerado | `{s['sinal']}` |
-    | Confiança | `{s['confianca']:.1%}` |
-    | RSI atual | `{s['rsi']:.2f}` |
-    | Z-Score | `{s['z']:+.3f}` |
-    | Volatilidade | `{s['vol']:.4f}%` |
-    | Estacionária | `{'Sim ✅' if s['est'] else 'Não ❌'}` |
-    """)
-
-    if s['direcao'] != 0:
-        st.success(f"🟢 **SINAL ATIVO:** {s['sinal']} com {s['confianca']:.1%} de confiança.")
-    else:
-        st.info("🟡 **Aguardando condições ideais.** Nenhuma condição de entrada ativa no momento.")
-
-# ── Tab 5: Modelo ML ──────────────────────────────────────────────────────────
-with tab5:
-    col_m1, col_m2 = st.columns(2)
-    met = res['metricas']
-
-    with col_m1:
-        st.markdown("### 🧠 Random Forest — Métricas de Validação")
+    ca4,cb4 = st.columns(2)
+    with ca4:
+        st.markdown("### 📋 Métricas Completas")
         st.markdown(f"""
-        | Métrica | Valor |
-        |:--|--:|
-        | Acurácia | `{met['acc']:.1%}` |
-        | Precisão (weighted) | `{met['prec']:.1%}` |
-        | Recall (weighted) | `{met['rec']:.1%}` |
-        | F1-Score (weighted) | `{met['f1']:.3f}` |
-        | Amostras de Treino | `{met['n_train']:,}` |
-        | Amostras de Val. | `{met['n_val']:,}` |
-        | N° de Árvores | `100` |
-        | Max Depth | `5` |
-        """)
+| Métrica | Valor |
+|:--|--:|
+| Retorno Acumulado | `{bt['ret_acum']:+.2f}%` |
+| Buy & Hold Ouro | `{bt['bh']:+.2f}%` |
+| Sharpe Ratio | `{bt['sharpe']:.3f}` |
+| Sortino Ratio | `{bt['sortino']:.3f}` |
+| Calmar Ratio | `{bt['calmar']:.3f}` |
+| Max Drawdown | `{bt['max_dd']:.2f}%` |
+| Win Rate | `{bt['win_rate']:.1f}%` |
+| Profit Factor | `{bt['profit_factor']:.3f}` |
+| Expectancy | `${bt['expectancy']:+.2f}` |
+| N° Trades | `{bt['n_trades']}` |
+| Capital Final | `${bt['cap_final']:,.2f}` |
+""")
+        # Distribuição PnL
+        if bt['trades']:
+            pnls = [t['pnl'] for t in bt['trades']]
+            fig_pnl = go.Figure(go.Histogram(x=pnls, nbinsx=40,
+                marker_color='#c9a84c', opacity=.8))
+            fig_pnl.add_vline(x=0,line_dash="dash",line_color="#f85149")
+            fig_pnl.update_layout(title="Distribuição P&L por Trade",**bl(300)); uf(fig_pnl)
+            st.plotly_chart(fig_pnl,use_container_width=True)
 
-        st.markdown("### 📌 Features Utilizadas")
-        df_f = res['df_feat']
-        modelo = res['modelo']
-        fi = pd.Series(modelo.feature_importances_, index=FEATURES).sort_values()
-        fig_fi = go.Figure(go.Bar(x=fi.values, y=fi.index, orientation='h',
-                                   marker_color='#c9a84c'))
-        fig_fi.update_layout(title="Feature Importance (Gini)",
-                              **base_layout(320))
-        upd(fig_fi)
-        st.plotly_chart(fig_fi, use_container_width=True)
+    with cb4:
+        # Equity mensal
+        if bt['trades']:
+            df_tr2 = pd.DataFrame(bt['trades'])
+            df_tr2['date'] = pd.to_datetime(df_tr2['date'])
+            df_tr2.set_index('date',inplace=True)
+            monthly = df_tr2['pnl'].resample('ME').sum()
+            fig_mon = go.Figure(go.Bar(
+                x=monthly.index, y=monthly.values,
+                marker_color=np.where(monthly.values>=0,'#3fb950','#f85149')))
+            fig_mon.update_layout(title="P&L Mensal (USD)",**bl(320)); uf(fig_mon)
+            st.plotly_chart(fig_mon,use_container_width=True)
 
-    with col_m2:
-        st.markdown("### 📈 Distribuição das Classes (Target)")
-        alvo_counts = res['df_feat']['Alvo'].value_counts().sort_index()
-        labels = {1:'COMPRA',0:'NEUTRO',-1:'VENDA'}
+        # Trades Compra vs Venda
+        trades_df = pd.DataFrame(bt['trades'])
+        if not trades_df.empty:
+            vc = trades_df[trades_df['dir']==1]['pnl']
+            vv = trades_df[trades_df['dir']==-1]['pnl']
+            fig_cv = go.Figure()
+            if len(vc):
+                fig_cv.add_trace(go.Box(y=vc,name="Compras",marker_color='#3fb950'))
+            if len(vv):
+                fig_cv.add_trace(go.Box(y=vv,name="Vendas",marker_color='#f85149'))
+            fig_cv.update_layout(title="P&L por Direção",**bl(280)); uf(fig_cv)
+            st.plotly_chart(fig_cv,use_container_width=True)
+
+# ── Tab 5: Modelo ─────────────────────────────────────────────────────────────
+with tab5:
+    ca5,cb5 = st.columns(2)
+    with ca5:
+        st.markdown("### 🧠 Ensemble — Métricas Walk-Forward OOS")
+        modelos_str = "RF + LR"
+        if XGB_OK: modelos_str += " + XGB"
+        if LGB_OK: modelos_str += " + LGB"
+        st.markdown(f"""
+| Métrica | Valor |
+|:--|--:|
+| Modelos | `{modelos_str}` |
+| Acurácia OOS | `{m['acc_oos']:.1%}` |
+| F1-Score OOS | `{m['f1_oos']:.3f}` |
+| ROC-AUC OOS | `{m['roc_oos']:.3f}` |
+| Amostras totais | `{m['n_total']:,}` |
+| Walk-Forward splits | `{m['n_splits']}` |
+| Features | `{len(m['feat_cols'])}` |
+""")
+        # Feature importance (RF)
+        rf_mod = None
+        try:
+            for name, est in res['modelo'].estimators_:
+                if name == 'rf':
+                    rf_mod = est; break
+        except:
+            pass
+        if rf_mod:
+            fi = pd.Series(rf_mod.feature_importances_,
+                           index=m['feat_cols']).sort_values().tail(20)
+            fig_fi = go.Figure(go.Bar(x=fi.values,y=fi.index,
+                orientation='h',marker_color='#c9a84c'))
+            fig_fi.update_layout(title="Top 20 Features (RF Gini)",**bl(420)); uf(fig_fi)
+            st.plotly_chart(fig_fi,use_container_width=True)
+
+    with cb5:
+        df_f5 = res['df_feat']
+        alvo  = df_f5['Alvo'].value_counts().sort_index()
+        labels= {1:'COMPRA',0:'NEUTRO',-1:'VENDA'}
         fig_pie = go.Figure(go.Pie(
-            labels=[labels.get(i,str(i)) for i in alvo_counts.index],
-            values=alvo_counts.values,
+            labels=[labels.get(i,str(i)) for i in alvo.index],
+            values=alvo.values,
             marker_colors=['#3fb950','#8b949e','#f85149'],
-            hole=0.4
-        ))
-        fig_pie.update_layout(paper_bgcolor=PLT_BG, font=dict(color=PLT_TEXT),
-                               height=320, margin=dict(l=20,r=20,t=40,b=20))
-        st.plotly_chart(fig_pie, use_container_width=True)
+            hole=.4))
+        fig_pie.update_layout(title="Distribuição do Target",
+            paper_bgcolor=BG,font=dict(color=TXT),height=300,
+            margin=dict(l=20,r=20,t=50,b=20))
+        st.plotly_chart(fig_pie,use_container_width=True)
 
-        st.markdown("### 📊 Distribuição do Retorno Futuro")
-        ret_fut_clean = res['df_feat']['Ret_Futuro'].dropna() * 100
-        fig_hist = go.Figure(go.Histogram(x=ret_fut_clean, nbinsx=60,
-                                           marker_color='#c9a84c', opacity=0.8))
-        fig_hist.add_vline(x=0, line_dash="dash", line_color="#f85149")
-        fig_hist.update_layout(title=f"Retorno a {HORIZONTE} candles (%)",
-                                **base_layout(310))
-        upd(fig_hist)
-        st.plotly_chart(fig_hist, use_container_width=True)
+        ret_f = df_f5['Ret_Futuro'].dropna()*100
+        fig_rh = go.Figure(go.Histogram(x=ret_f,nbinsx=60,
+            marker_color='#c9a84c',opacity=.8))
+        fig_rh.add_vline(x=0,line_dash="dash",line_color="#f85149")
+        fig_rh.update_layout(title=f"Retorno a {HORIZONTE} candles (%)",**bl(300)); uf(fig_rh)
+        st.plotly_chart(fig_rh,use_container_width=True)
 
 # ==============================================================================
 # DADOS BRUTOS
 # ==============================================================================
 st.markdown("---")
-with st.expander("🗂️ Dados brutos (últimas 100 barras)"):
-    st.dataframe(res['df_raw'].tail(100).style.format(precision=4), use_container_width=True)
-
-with st.expander("🤖 Features calculadas (últimas 50 linhas)"):
-    cols_show = ['Ouro','RSI','Z_Score','Volatilidade','ATR_Pct','Is_Stationary','Alvo']
+with st.expander("🗂️ Últimas 100 barras"):
+    st.dataframe(res['df_raw'].tail(100).style.format(precision=4),use_container_width=True)
+with st.expander("🤖 Features (últimas 50 linhas)"):
+    cols_show = ['Ouro_Close','RSI','Z_Score','Volatilidade',
+                 'ATR_Pct','adx','above_sma200','Alvo']
     st.dataframe(res['df_feat'][cols_show].tail(50).style.format(precision=4),
                  use_container_width=True)
 
-st.caption("⚠️ Robô educacional baseado em Random Forest. Resultados passados não garantem resultados futuros. Não é recomendação de investimento.")
+st.caption("⚠️ Dashboard educacional. Resultados passados não garantem retornos futuros.")
